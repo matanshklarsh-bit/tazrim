@@ -78,7 +78,6 @@ const ago = (d) => {
   if (n === 1) return "אתמול";
   return `לפני ${n} ימים`;
 };
-const isValid = (r) => (r["סטטוס רישום"] || "").trim() === "תקין";
 
 // ---------- טוקן לגיליון ----------
 function saveToken(cred) {
@@ -125,9 +124,13 @@ async function readSheet() {
   if (res.status === 403 || res.status === 404) return { noAccess: true };
   if (!res.ok) throw new Error("sheets_" + res.status);
   const json = await res.json();
-  const out = {};
-  Object.keys(TABS).forEach((k, i) => { out[k] = toObjects(json.valueRanges[i]?.values || []); });
-  return { data: out };
+  const out = {}, heads = {};
+  Object.keys(TABS).forEach((k, i) => {
+    const rows = json.valueRanges[i]?.values || [];
+    heads[k] = (rows[0] || []).map((h) => String(h).trim());
+    out[k] = toObjects(rows);
+  });
+  return { data: out, heads };
 }
 function toObjects(rows) {
   if (!rows.length) return [];
@@ -137,13 +140,52 @@ function toObjects(rows) {
     .map((r) => Object.fromEntries(head.map((h, i) => [h, r[i] ?? ""])));
 }
 
+// ---------- חוזה קריאה (LOG-0009, אושר ע"י מתן 18.11.2026) ----------
+// כותרות חובה לכל לשונית. כותרת חסרה או כפולה עוצרת את האפליקציה עם הודעה גלויה.
+const REQUIRED = {
+  balances: ["מזהה קבוע", "תאריך ושעת הצילום", "חשבון או כרטיס", "סוג", "סכום (₪)", "מועד החיוב", 'אושר ע"י מתן', "סטטוס רישום", "חשבון לחיוב"],
+  owe: ["מזהה קבוע", "ספק", "סוג חיוב", "סכום (₪)", "תאריך המסמך", "חשבון לתשלום", "סטטוס", "סטטוס רישום"],
+  supplierPayments: ["מזהה קבוע", "מזהה חוב", "תאריך תשלום", "סכום ששולם (₪)", "חשבון", "סטטוס רישום"],
+  owed: ["מזהה קבוע", "מספר חשבונית", "לקוח", 'סכום כולל מע"מ (₪)', "סטטוס", "סטטוס רישום", "מספר חשבון עסקה", "תאריך חשבון עסקה"],
+  payments: ["מזהה קבוע", "תאריך כניסה לבנק", "סכום שנכנס (₪)", "חשבון", "סטטוס רישום"],
+  allocations: ["מזהה קבוע", "מזהה תשלום", "מזהה חשבונית", "סכום משויך (₪)", "ניכוי במקור (₪)", "סטטוס רישום"],
+  expected: ["מזהה קבוע", "סוג", "תקופה", "סכום (₪)", "מועד מוקדם", "מועד מאוחר", "בסיס המועד", "חשבון לתשלום", "סטטוס", "סטטוס רישום"],
+  timing: ["לקוח", "מספר שרשראות", "חציון (ימים)"]
+};
+const RECEIVABLE_ACTIVE = ["פתוחה", "שולמה חלקית"];
+const RECEIVABLE_CLOSED = ["שולמה", "בוטל", "חוב אבוד"]; // היסטוריה: לא נפתחת מחדש ולא נכנסת לגבייה
+const DEBT_ACTIVE = ["פתוח"];
+const DEBT_CLOSED = ["שולם"];
+const EXPECTED_ACTIVE = ["צפוי"];
+const EXPECTED_CLOSED = ["שולם", "בוטל"];
+const APPROVED = ["כן", "לא נדרש"];
+const regOk = (r) => (r["סטטוס רישום"] || "").trim() === "תקין";
+
+function checkHeaders(heads) {
+  const problems = [];
+  for (const [k, req] of Object.entries(REQUIRED)) {
+    const h = heads[k] || [];
+    for (const name of req) if (!h.includes(name)) problems.push(`בלשונית "${TABS[k]}" חסרה הכותרת "${name}"`);
+    const dup = h.filter((x, i) => x && h.indexOf(x) !== i);
+    for (const name of new Set(dup)) problems.push(`בלשונית "${TABS[k]}" הכותרת "${name}" מופיעה פעמיים`);
+  }
+  return problems;
+}
+
 // ---------- חישובים (נתונים מדודים בלבד, בלי הערכות) ----------
 function compute(d) {
   const today = startOfToday();
-  const skipped = {};
-  const valid = (name, rows) => rows.filter((r) => { const ok = isValid(r); if (!ok) skipped[name] = (skipped[name] || 0) + 1; return ok; });
+  const review = []; // שורות לבירור: לא מנחשים ולא משמיטים בשקט
+  const flag = (tab, r, why) => review.push({ tab, id: r["מזהה קבוע"] || "(ללא מזהה)", why });
 
-  const balances = valid("יתרות", d.balances);
+  // יתרות: רק רישום תקין ואישור "כן"/"לא נדרש". 2165 ושאר הכרטיסים לא נכנסים ליתרות העו"ש.
+  const pendingApproval = [];
+  const balances = d.balances.filter((r) => {
+    if (!regOk(r)) { flag(TABS.balances, r, `סטטוס רישום "${r["סטטוס רישום"] || "ריק"}"`); return false; }
+    const ap = (r['אושר ע"י מתן'] || "").trim();
+    if (!APPROVED.includes(ap)) { pendingApproval.push(r); return false; }
+    return true;
+  });
   const accounts = ACCOUNTS.map((a) => {
     const snaps = balances
       .filter((r) => r["חשבון או כרטיס"] === a.key && r["סוג"] === 'יתרת עו"ש')
@@ -152,8 +194,10 @@ function compute(d) {
       .sort((x, y) => y.at - x.at);
     return { ...a, latest: snaps[0] || null };
   });
+  const infoOnly = balances.filter((r) => r["סוג"] === 'יתרת עו"ש' && !ACCOUNTS.some((a) => a.key === r["חשבון או כרטיס"]))
+    .map((r) => ({ name: r["חשבון או כרטיס"], amount: toNum(r["סכום (₪)"]) }));
 
-  // חיובי כרטיסים: אותו מחזור (כרטיס + מועד חיוב) נספר פעם אחת, לפי הצילום האחרון
+  // חיובי כרטיסים: אותו כרטיס + אותו מועד חיוב נספר פעם אחת, לפי הצילום העדכני
   const cycles = new Map();
   balances.filter((r) => r["סוג"] === "חיוב הבא").forEach((r) => {
     const due = toDate(r["מועד החיוב"]);
@@ -165,66 +209,83 @@ function compute(d) {
     }
   });
   const cardCharges = [...cycles.values()].filter((c) => c.due && c.due >= today).sort((a, b) => a.due - b.due);
+  const pendingCards = pendingApproval.filter((r) => r["סוג"] === "חיוב הבא" && toDate(r["מועד החיוב"]) >= today);
 
-  const expectedAll = valid("חיובים צפויים", d.expected)
-    .filter((r) => (r["סטטוס"] || "") === "צפוי")
-    .map((r) => ({
+  // חיובים צפויים: נכנסים במועד המוקדם. מועד שעבר לא נחשב ששולם.
+  const expectedAll = [];
+  d.expected.forEach((r) => {
+    const st = (r["סטטוס"] || "").trim();
+    if (EXPECTED_CLOSED.includes(st)) return;
+    if (!EXPECTED_ACTIVE.includes(st)) { flag(TABS.expected, r, `סטטוס "${st || "ריק"}" לא מוכר`); return; }
+    if (!regOk(r)) { flag(TABS.expected, r, `סטטוס רישום "${r["סטטוס רישום"] || "ריק"}"`); return; }
+    expectedAll.push({
       type: r["סוג"], period: r["תקופה"], amount: toNum(r["סכום (₪)"]),
       early: toDate(r["מועד מוקדם"]), late: toDate(r["מועד מאוחר"]), basis: r["בסיס המועד"], account: r["חשבון לתשלום"]
-    }))
-    .sort((a, b) => (a.early || 0) - (b.early || 0));
-  const expected = expectedAll.filter((e) => !e.late || e.late >= today);
+    });
+  });
+  expectedAll.sort((a, b) => (a.early || 0) - (b.early || 0));
+  const expected = expectedAll.filter((e) => e.early && (!e.late || e.late >= today));
   const expectedPast = expectedAll.filter((e) => e.late && e.late < today);
+  const expectedNoDate = expectedAll.filter((e) => !e.early);
 
-  // חובות לספקים: יתרה פתוחה = סכום פחות תשלומים שנרשמו מול מזהה החוב
+  // חובות לספקים: יתרה = סכום פחות תשלומי ספקים תקינים שנרשמו בפועל
   const paidByDebt = {};
-  valid("תשלומים לספקים", d.supplierPayments).forEach((p) => {
+  d.supplierPayments.forEach((p) => {
+    if (!regOk(p)) { flag(TABS.supplierPayments, p, `סטטוס רישום "${p["סטטוס רישום"] || "ריק"}"`); return; }
     const id = p["מזהה חוב"]; const a = toNum(p["סכום ששולם (₪)"]);
     if (id && a) paidByDebt[id] = (paidByDebt[id] || 0) + a;
   });
-  const debts = valid("אני חייב", d.owe)
-    .filter((r) => (r["סטטוס"] || "") !== "שולם")
-    .map((r) => {
-      const amount = toNum(r["סכום (₪)"]) || 0;
-      const paid = paidByDebt[r["מזהה קבוע"]] || 0;
-      const docDate = toDate(r["תאריך המסמך"]);
-      return {
-        id: r["מזהה קבוע"], supplier: r["ספק"], kind: r["סוג חיוב"], docNo: r["מספר מסמך של הספק"],
-        amount, paid, open: amount - paid, docDate, age: docDate ? dayDiff(today, docDate) : null, account: r["חשבון לתשלום"]
-      };
-    })
-    .filter((x) => x.open > 0.5)
-    .sort((a, b) => (a.docDate ? a.docDate.getTime() : Infinity) - (b.docDate ? b.docDate.getTime() : Infinity));
+  const debts = [];
+  d.owe.forEach((r) => {
+    const st = (r["סטטוס"] || "").trim();
+    if (DEBT_CLOSED.includes(st)) return;
+    if (!DEBT_ACTIVE.includes(st)) { flag(TABS.owe, r, `סטטוס "${st || "ריק"}" לא מוכר`); return; }
+    if (!regOk(r)) { flag(TABS.owe, r, `סטטוס רישום "${r["סטטוס רישום"] || "ריק"}"`); return; }
+    const amount = toNum(r["סכום (₪)"]) || 0;
+    const paid = paidByDebt[r["מזהה קבוע"]] || 0;
+    const docDate = toDate(r["תאריך המסמך"]);
+    if (amount - paid > 0) debts.push({
+      id: r["מזהה קבוע"], supplier: r["ספק"], kind: r["סוג חיוב"], docNo: r["מספר מסמך של הספק"],
+      amount, paid, open: amount - paid, docDate, age: docDate ? dayDiff(today, docDate) : null, account: r["חשבון לתשלום"]
+    });
+  });
+  debts.sort((a, b) => (a.docDate ? a.docDate.getTime() : Infinity) - (b.docDate ? b.docDate.getTime() : Infinity));
 
-  // חובות לקוחות: יתרה פתוחה = סכום פחות שיוכים (כולל ניכוי במקור)
+  // חובות לקוחות: רק "פתוחה"/"שולמה חלקית". שולמה/בוטל/חוב אבוד הם היסטוריה ולא נפתחים מחדש.
+  // יתרה = סכום פחות שיוכים תקינים (שיוך "ראיה בלבד" אינו שיוך כספי).
   const allocByInv = {};
-  valid("שיוכים", d.allocations).forEach((a) => {
+  d.allocations.forEach((a) => {
+    if (!regOk(a)) return;
     const id = a["מזהה חשבונית"];
     const s = (toNum(a["סכום משויך (₪)"]) || 0) + (toNum(a["ניכוי במקור (₪)"]) || 0);
     if (id) allocByInv[id] = (allocByInv[id] || 0) + s;
   });
-  const receivables = valid("חייבים לי", d.owed)
-    .filter((r) => (r["סטטוס"] || "") !== "שולמה")
-    .map((r) => {
-      const amount = toNum(r['סכום כולל מע"מ (₪)']) || 0;
-      const open = amount - (allocByInv[r["מזהה קבוע"]] || 0);
-      const proformaDate = toDate(r["תאריך חשבון עסקה"]);
-      return {
-        id: r["מזהה קבוע"], client: r["לקוח"], invoice: r["מספר חשבונית"], proforma: r["מספר חשבון עסקה"],
-        amount, open, proformaDate, invDate: toDate(r["תאריך חשבונית"]),
-        age: proformaDate ? dayDiff(today, proformaDate) : null, status: r["סטטוס"]
-      };
-    })
-    .filter((x) => x.open > 0.5)
-    .sort((a, b) => (a.proformaDate ? a.proformaDate.getTime() : Infinity) - (b.proformaDate ? b.proformaDate.getTime() : Infinity));
+  const receivables = [];
+  d.owed.forEach((r) => {
+    const st = (r["סטטוס"] || "").trim();
+    if (RECEIVABLE_CLOSED.includes(st)) return;
+    if (!RECEIVABLE_ACTIVE.includes(st)) { flag(TABS.owed, r, `סטטוס "${st || "ריק"}" לא מוכר`); return; }
+    if (!regOk(r)) { flag(TABS.owed, r, `סטטוס רישום "${r["סטטוס רישום"] || "ריק"}"`); return; }
+    const amount = toNum(r['סכום כולל מע"מ (₪)']) || 0;
+    const open = amount - (allocByInv[r["מזהה קבוע"]] || 0);
+    const proformaDate = toDate(r["תאריך חשבון עסקה"]);
+    if (open <= 0) { flag(TABS.owed, r, "מסומנת פתוחה אבל השיוכים מכסים את הסכום"); return; }
+    receivables.push({
+      id: r["מזהה קבוע"], client: r["לקוח"], invoice: r["מספר חשבונית"], proforma: r["מספר חשבון עסקה"],
+      amount, open, proformaDate, age: proformaDate ? dayDiff(today, proformaDate) : null, status: st
+    });
+  });
+  receivables.sort((a, b) => (a.proformaDate ? a.proformaDate.getTime() : Infinity) - (b.proformaDate ? b.proformaDate.getTime() : Infinity));
 
-  // חיובים ידועים ב-30 הימים הקרובים לכל חשבון (נמדדים בלבד: כרטיסים וחיובים צפויים מהגיליון)
+  // חיובים ידועים ב-30 הימים הקרובים לכל חשבון (כרטיסים וחיובים צפויים מהגיליון בלבד)
   const horizon = new Date(today); horizon.setDate(horizon.getDate() + 30);
   const known30 = {};
   cardCharges.filter((c) => c.due <= horizon).forEach((c) => { known30[c.account] = (known30[c.account] || 0) + (c.amount || 0); });
-  expected.filter((e) => (e.early || today) <= horizon).forEach((e) => { known30[e.account] = (known30[e.account] || 0) + (e.amount || 0); });
+  expected.filter((e) => e.early <= horizon).forEach((e) => { known30[e.account] = (known30[e.account] || 0) + (e.amount || 0); });
+  // חיוב צפוי שמועדו עבר ועדיין "צפוי" לא נחשב ששולם: נספר כחיוב מיידי
+  expectedPast.forEach((e) => { known30[e.account] = (known30[e.account] || 0) + (e.amount || 0); });
 
-  return { accounts, cardCharges, expected, expectedPast, debts, receivables, known30, skipped, timing: d.timing };
+  return { accounts, infoOnly, cardCharges, pendingCards, expected, expectedPast, expectedNoDate, debts, receivables, known30, review, timing: d.timing };
 }
 
 // ---------- תצוגה ----------
@@ -261,8 +322,11 @@ function viewHome(c) {
     html += `<div class="notice">עוד לא הוגדרו מסגרות. <a href="#" data-goto="more">להגדרה</a></div>`;
   }
   if (c.expectedPast.length) {
-    html += `<div class="notice">${c.expectedPast.map((e) => `${esc(e.type)} (${money(e.amount)}, ${fmtDate(e.late)})`).join(", ")}: המועד עבר והשורה עדיין מסומנת "צפוי" בגיליון. אם זה שולם, נועה צריכה לעדכן.</div>`;
+    html += `<div class="notice">${c.expectedPast.map((e) => `${esc(e.type)} (${money(e.amount)}, ${fmtDate(e.late)})`).join(", ")}: המועד עבר והשורה עדיין מסומנת "צפוי" בגיליון. עד שנועה תעדכן, זה נספר כחיוב שעוד לא ירד.</div>`;
   }
+  if (c.review.length) html += `<div class="notice">${c.review.length} שורות בגיליון מחכות לבירור ולא נכללו. <a href="#" data-goto="more">לפרטים</a></div>`;
+  if (c.pendingCards.length) html += `<div class="notice">${c.pendingCards.map((r) => esc(r["חשבון או כרטיס"])).join(", ")}: יש חיוב קרוב שעוד לא אושר, ולכן הוא לא נספר.</div>`;
+  if (c.expectedNoDate.length) html += `<div class="notice">${c.expectedNoDate.map((e) => esc(e.type)).join(", ")}: חיוב צפוי בלי מועד. מוצג כחסר.</div>`;
   const total = c.accounts.reduce((t, a) => t + (a.latest?.amount || 0), 0);
   const allKnown = c.accounts.every((a) => a.latest);
   html += `<div class="card"><div class="muted small">סך היתרות (פרטי + עסקי)</div>
@@ -342,10 +406,14 @@ function viewMore(c) {
     <button class="btn" id="saveSettings">שמירה</button> <span id="savedMsg" class="muted small"></span>
     <div class="muted small" style="margin-top:8px">נשמר בענן שלך בלבד, לא בקוד.</div></div>`;
 
-  const skippedTxt = Object.entries(c.skipped).map(([k, n]) => `${esc(k)}: ${n}`).join(" · ");
+  html += `<div class="card"><h2>שורות לבירור (${c.review.length})</h2>` +
+    (c.review.length ? c.review.map((x) => `<div class="row"><div class="main"><div class="title">${esc(x.tab)} · ${esc(x.id)}</div><div class="sub">${esc(x.why)}</div></div></div>`).join("")
+      : `<div class="muted small">אין. כל השורות הפעילות נקראו לפי החוזה.</div>`) + `</div>`;
+  if (c.infoOnly.length) html += `<div class="card"><h2>מידע בלבד, לא נכנס ליתרות ולתחזית</h2>` +
+    c.infoOnly.map((x) => `<div class="row"><div class="main">${esc(x.name)}</div><div>${money(x.amount)}</div></div>`).join("") + `</div>`;
   html += `<div class="card"><h2>חשבון ומקורות</h2>
     <div class="small">מחובר: ${esc(state.user?.email || "")}</div>
-    <div class="small muted" style="margin-top:6px">שורות שלא נכללו כי סטטוס הרישום שלהן אינו "תקין": ${skippedTxt || "אין"}</div>
+    <div class="small muted" style="margin-top:6px">כללי הקריאה לפי חוזה v1 של נועה (LOG-0009).</div>
     <div style="margin-top:12px"><button class="btn secondary" id="signOutBtn">יציאה</button></div></div>
     <div class="muted small center">גרסה 0.1 · שלב 1</div>`;
   return html;
@@ -390,6 +458,13 @@ async function load() {
     }
     if (r.noAccess) {
       $view.innerHTML = `<div class="error">לחשבון ${esc(state.user.email)} אין גישה לגיליון של נועה. צריך לשתף אותו עם החשבון הזה, לצפייה בלבד מספיק.</div>`;
+      return;
+    }
+    const problems = checkHeaders(r.heads);
+    if (problems.length) {
+      $view.innerHTML = `<div class="error"><b>מבנה הגיליון השתנה, ולכן האפליקציה לא מציגה מספרים.</b><br>${problems.map(esc).join("<br>")}</div>
+        <div class="muted small">צריך לבדוק עם נועה. אחרי התיקון, לרענן.</div>`;
+      $refresh.hidden = false;
       return;
     }
     state.data = compute(r.data);
