@@ -1,0 +1,90 @@
+:root {
+  --bg: #f4f6f9;
+  --card: #ffffff;
+  --ink: #1b2430;
+  --muted: #6b7684;
+  --line: #e3e7ed;
+  --brand: #1f3a5f;
+  --green: #1e8e4e;
+  --green-bg: #e5f4e4;
+  --yellow: #b7791f;
+  --yellow-bg: #fbf1dc;
+  --red: #c0392b;
+  --red-bg: #fbebeb;
+  --radius: 14px;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--ink);
+  font-family: -apple-system, "Segoe UI", "Heebo", Arial, sans-serif; font-size: 16px; }
+button { font: inherit; cursor: pointer; }
+#app { max-width: 720px; margin: 0 auto; min-height: 100vh; padding-bottom: 84px; }
+
+#topbar { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; justify-content: space-between;
+  background: var(--brand); color: #fff; padding: calc(10px + env(safe-area-inset-top)) 16px 10px; }
+#topbar h1 { margin: 0; font-size: 20px; }
+.icon-btn { background: transparent; border: 0; color: #fff; font-size: 22px; padding: 4px 8px; }
+
+#freshness { font-size: 12.5px; color: var(--muted); padding: 6px 16px; background: #eaeef3; }
+#freshness .stale { color: var(--yellow); font-weight: 600; }
+
+main { padding: 12px; }
+.center { text-align: center; padding: 40px 16px; }
+.muted { color: var(--muted); }
+.small { font-size: 13px; }
+
+.card { background: var(--card); border-radius: var(--radius); padding: 14px 16px; margin-bottom: 12px;
+  box-shadow: 0 1px 2px rgba(0,0,0,.05); }
+.card h2 { font-size: 16px; margin: 0 0 10px; }
+.card h3 { font-size: 15px; margin: 0 0 6px; }
+
+.big { font-size: 30px; font-weight: 700; direction: ltr; text-align: right; }
+.num { direction: ltr; unicode-bidi: embed; white-space: nowrap; }
+.neg { color: var(--red); }
+.pos { color: var(--green); }
+
+.accounts { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+@media (max-width: 420px) { .accounts { grid-template-columns: 1fr; } }
+.acct { border-right: 5px solid var(--line); }
+.acct.green { border-right-color: var(--green); }
+.acct.yellow { border-right-color: var(--yellow); }
+.acct.red { border-right-color: var(--red); }
+.acct .bal { font-size: 24px; font-weight: 700; }
+
+.bar { height: 8px; background: #edf0f4; border-radius: 4px; overflow: hidden; margin: 8px 0 4px; }
+.bar > div { height: 100%; background: var(--green); }
+.bar.yellow > div { background: var(--yellow); }
+.bar.red > div { background: var(--red); }
+
+.row { display: flex; justify-content: space-between; align-items: baseline; gap: 10px;
+  padding: 9px 0; border-bottom: 1px solid var(--line); }
+.row:last-child { border-bottom: 0; }
+.row .main { flex: 1; min-width: 0; }
+.row .title { font-weight: 600; }
+.row .sub { font-size: 13px; color: var(--muted); margin-top: 2px; }
+
+.tag { display: inline-block; font-size: 11.5px; padding: 1px 7px; border-radius: 10px;
+  background: #edf0f4; color: var(--muted); margin-inline-start: 4px; vertical-align: middle; }
+.tag.measured { background: var(--green-bg); color: var(--green); }
+.tag.estimate { background: var(--yellow-bg); color: var(--yellow); }
+.tag.old { background: var(--red-bg); color: var(--red); }
+
+.btn { background: var(--brand); color: #fff; border: 0; border-radius: 10px; padding: 12px 18px; font-weight: 600; }
+.btn.secondary { background: #e3e8ef; color: var(--ink); }
+.btn.block { width: 100%; }
+
+.notice { background: var(--yellow-bg); color: #6b4a10; border-radius: 10px; padding: 10px 12px; font-size: 14px; margin-bottom: 12px; }
+.error { background: var(--red-bg); color: #7a1f16; border-radius: 10px; padding: 10px 12px; font-size: 14px; margin-bottom: 12px; }
+
+label.field { display: block; margin: 10px 0; }
+label.field span { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
+label.field input { width: 100%; padding: 10px; border: 1px solid var(--line); border-radius: 8px; font: inherit; direction: ltr; text-align: right; }
+
+#tabs { position: fixed; bottom: 0; left: 0; right: 0; z-index: 5; display: flex; justify-content: center;
+  background: #fff; border-top: 1px solid var(--line); padding-bottom: env(safe-area-inset-bottom); }
+#tabs button { flex: 1; max-width: 144px; background: none; border: 0; padding: 8px 0 10px; color: var(--muted);
+  font-size: 12px; display: flex; flex-direction: column; align-items: center; gap: 2px; }
+#tabs button span { font-size: 20px; }
+#tabs button.active { color: var(--brand); font-weight: 700; }
+
+.login { max-width: 360px; margin: 60px auto; text-align: center; }
+.login p { color: var(--muted); }
