@@ -89,3 +89,7 @@ label.field input { width: 100%; padding: 10px; border: 1px solid var(--line); b
 
 .login { max-width: 360px; margin: 60px auto; text-align: center; }
 .login p { color: var(--muted); }
+
+.row.link { cursor: pointer; }
+.row.link:active { background: #f0f3f7; }
+.chev { color: var(--muted); font-size: 20px; margin-inline-start: 4px; }

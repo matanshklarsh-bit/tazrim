@@ -369,11 +369,11 @@ function viewHome(c) {
 
   const debtTotal = c.debts.reduce((t, x) => t + x.open, 0);
   const recTotal = c.receivables.reduce((t, x) => t + x.open, 0);
-  html += `<div class="card"><div class="row"><div class="main"><div class="title">חובות פתוחים לספקים</div>
+  html += `<div class="card"><div class="row link" data-goto="decide"><div class="main"><div class="title">חובות פתוחים לספקים</div>
       <div class="sub">${c.debts.length} חובות · הישן ביותר: ${c.debts[0]?.age != null ? c.debts[0].age + " ימים" : "—"}</div></div>
-      <div>${money(debtTotal)}</div></div>
-    <div class="row"><div class="main"><div class="title">חובות לקוחות פתוחים</div>
-      <div class="sub">${c.receivables.length} חשבונות · הרשימה עוד לא שלמה</div></div><div>${money(recTotal)}</div></div></div>`;
+      <div>${money(debtTotal)} <span class="chev">‹</span></div></div>
+    <div class="row link" data-goto="more"><div class="main"><div class="title">חובות לקוחות פתוחים</div>
+      <div class="sub">${c.receivables.length} חשבונות · הרשימה עוד לא שלמה</div></div><div>${money(recTotal)} <span class="chev">‹</span></div></div></div>`;
   return html;
 }
 
@@ -427,7 +427,7 @@ function viewMore(c) {
 const viewSoon = (title, text) => () => `<div class="card center"><h2>${esc(title)}</h2><div class="muted">${esc(text)}</div></div>`;
 
 function bindViewEvents() {
-  $view.querySelectorAll("[data-goto]").forEach((a) => a.addEventListener("click", (e) => { e.preventDefault(); state.tab = a.dataset.goto; render(); }));
+  $view.querySelectorAll("[data-goto]").forEach((a) => a.addEventListener("click", (e) => { e.preventDefault(); state.tab = a.dataset.goto; render(); window.scrollTo(0, 0); }));
   document.getElementById("signOutBtn")?.addEventListener("click", async () => { clearToken(); await signOut(auth); });
   document.getElementById("saveSettings")?.addEventListener("click", async () => {
     const n = (id) => { const v = toNum(document.getElementById(id).value); return v == null ? null : Math.abs(v); };
