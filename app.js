@@ -128,17 +128,19 @@ async function readSheet() {
   const out = {}, heads = {};
   Object.keys(TABS).forEach((k, i) => {
     const rows = json.valueRanges[i]?.values || [];
-    heads[k] = (rows[0] || []).map((h) => String(h).trim());
+    heads[k] = (rows[0] || []).map((h) => norm(String(h)));
     out[k] = toObjects(rows);
   });
   return { data: out, heads };
 }
+// גרשיים עבריים (״ ׳) וסימני כיווון נראים זהים לעין אבל שונים למחשב. מאחדים לפני כל השוואה.
+const norm = (v) => typeof v === "string" ? v.replace(/\u05F4/g, '"').replace(/\u05F3/g, "'").replace(/[\u200e\u200f\u202a-\u202e]/g, "").trim() : v;
 function toObjects(rows) {
   if (!rows.length) return [];
-  const head = rows[0].map((h) => String(h).trim());
+  const head = rows[0].map((h) => norm(String(h)));
   return rows.slice(1)
     .filter((r) => r.some((c) => c !== "" && c != null))
-    .map((r) => Object.fromEntries(head.map((h, i) => [h, r[i] ?? ""])));
+    .map((r) => Object.fromEntries(head.map((h, i) => [h, norm(r[i] ?? "")])));
 }
 
 // ---------- חוזה קריאה (LOG-0009, אושר ע"י מתן 18.11.2026) ----------
@@ -181,7 +183,9 @@ function compute(d) {
 
   // יתרות: רק רישום תקין ואישור "כן"/"לא נדרש". 2165 ושאר הכרטיסים לא נכנסים ליתרות העו"ש.
   const pendingApproval = [];
+  const BALANCE_TYPES = ['יתרת עו"ש', "חיוב הבא"];
   const balances = d.balances.filter((r) => {
+    if (!BALANCE_TYPES.includes(r["סוג"])) { flag(TABS.balances, r, `סוג "${r["סוג"] || "ריק"}" לא מוכר`); return false; }
     if (!regOk(r)) { flag(TABS.balances, r, `סטטוס רישום "${r["סטטוס רישום"] || "ריק"}"`); return false; }
     const ap = (r['אושר ע"י מתן'] || "").trim();
     if (!APPROVED.includes(ap)) { pendingApproval.push(r); return false; }
