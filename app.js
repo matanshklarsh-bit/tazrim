@@ -10,6 +10,7 @@ import {
 import {
   getFirestore, doc, getDoc, setDoc
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import { viewImport, bindImport, loadImports, freshness, viewTxns, bindTxns } from "./importer.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyBxOsOGAgVoQkWAu2Qx6lsrFbfAJo6u5RQ",
@@ -45,7 +46,7 @@ const provider = new GoogleAuthProvider();
 provider.addScope(SHEETS_SCOPE);
 provider.setCustomParameters({ prompt: "select_account" });
 
-const state = { user: null, settings: null, data: null, loadedAt: null, tab: "home", error: null };
+const state = { user: null, settings: null, data: null, loadedAt: null, tab: "home", sub: "", imports: [], error: null };
 const $view = document.getElementById("view");
 const $tabs = document.getElementById("tabs");
 const $fresh = document.getElementById("freshness");
@@ -294,22 +295,40 @@ function compute(d) {
 }
 
 // ---------- תצוגה ----------
-function render() {
+const importCtx = {
+  db,
+  get imports() { return state.imports; },
+  getSettings: () => state.settings,
+  saveSettings: async (settings) => { await setDoc(doc(db, "settings", "main"), settings); state.settings = settings; },
+  reloadImports: async () => { state.imports = await loadImports(db); },
+  rerender: () => render()
+};
+
+async function render() {
   $tabs.querySelectorAll("button").forEach((b) => b.classList.toggle("active", b.dataset.tab === state.tab));
   const c = state.data;
   if (!c) return;
+  renderFreshness(c);
+  if (state.tab === "more" && state.sub === "import") {
+    $view.innerHTML = viewImport(importCtx); bindImport($view, importCtx); bindViewEvents(); return;
+  }
+  if (state.tab === "more" && state.sub === "txns") {
+    $view.innerHTML = `<div class="center muted">טוען תנועות…</div>`;
+    $view.innerHTML = await viewTxns(importCtx); bindTxns($view, importCtx); bindViewEvents(); return;
+  }
   const views = { home: viewHome, forecast: viewSoon("תחזית", "גרף יתרה ל-60 יום בשני תרחישים, נקודה נמוכה ורשימת אירועים. נבנה בשלב 3."),
     decide: viewDecide, insights: viewSoon("תובנות", "קטגוריות, מינויים, ביטוחים ועלות הכסף. נבנה בשלב 5, אחרי ייבוא הקבצים."), more: viewMore };
   $view.innerHTML = (state.error ? `<div class="error">${esc(state.error)}</div>` : "") + views[state.tab](c);
   bindViewEvents();
-  renderFreshness(c);
 }
 
 function renderFreshness(c) {
   const latest = c.accounts.map((a) => a.latest?.at).filter(Boolean).sort((a, b) => a - b)[0];
   const stale = latest && dayDiff(new Date(), latest) > 7;
   $fresh.hidden = false;
-  $fresh.innerHTML = `יתרות: <span class="${stale ? "stale" : ""}">${ago(latest)}</span> · גיליון נועה: נקרא ${state.loadedAt ? state.loadedAt.toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" }) : "—"}`;
+  const fr = freshness(state.imports);
+  const frTxt = Object.entries(fr).map(([k, v]) => { const d = toDate(v); return `${esc(k)}: <span class="${dayDiff(new Date(), d) > 7 ? "stale" : ""}">${fmtDate(d)}</span>`; }).join(" · ");
+  $fresh.innerHTML = `${frTxt ? `קבצים: ${frTxt}<br>` : ""}יתרות: <span class="${stale ? "stale" : ""}">${ago(latest)}</span> · גיליון נועה: נקרא ${state.loadedAt ? state.loadedAt.toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" }) : "—"}`;
 }
 
 function acctColor(bal, limit, cushion) {
@@ -367,6 +386,7 @@ function viewHome(c) {
     : `<div class="muted small">אין חיובים ידועים קדימה.</div>`;
   html += `</div>`;
 
+  html += `<button class="btn secondary block" data-sub="import" style="margin-bottom:12px">ייבוא קבצים</button>`;
   const debtTotal = c.debts.reduce((t, x) => t + x.open, 0);
   const recTotal = c.receivables.reduce((t, x) => t + x.open, 0);
   html += `<div class="card"><div class="row link" data-goto="decide"><div class="main"><div class="title">חובות פתוחים לספקים</div>
@@ -397,7 +417,9 @@ function viewDecide(c) {
 function viewMore(c) {
   const s = state.settings || {};
   const recTotal = c.receivables.reduce((t, x) => t + x.open, 0);
-  let html = `<div class="card"><h2>תקבולים פתוחים · ${money(recTotal)}</h2>
+  let html = `<div class="card" style="display:flex;gap:8px"><button class="btn" data-sub="import" style="flex:1">ייבוא קבצים</button>
+    <button class="btn secondary" data-sub="txns" style="flex:1">תנועות</button></div>`;
+  html += `<div class="card"><h2>תקבולים פתוחים · ${money(recTotal)}</h2>
     <div class="muted small" style="margin-bottom:6px">חובות לקוחות ישנים עדיין מחכים לאישור, ולכן הרשימה לא שלמה. מועד צפוי לפי זמני תשלום ייכנס בשלב 4.</div>` +
     (c.receivables.length ? c.receivables.map((x) => `<div class="row"><div class="main">
       <div class="title">${esc(x.client)}</div>
@@ -427,11 +449,12 @@ function viewMore(c) {
 const viewSoon = (title, text) => () => `<div class="card center"><h2>${esc(title)}</h2><div class="muted">${esc(text)}</div></div>`;
 
 function bindViewEvents() {
-  $view.querySelectorAll("[data-goto]").forEach((a) => a.addEventListener("click", (e) => { e.preventDefault(); state.tab = a.dataset.goto; render(); window.scrollTo(0, 0); }));
+  $view.querySelectorAll("[data-goto]").forEach((a) => a.addEventListener("click", (e) => { e.preventDefault(); state.tab = a.dataset.goto; state.sub = a.dataset.sub || ""; render(); window.scrollTo(0, 0); }));
+  $view.querySelectorAll("[data-sub]").forEach((b) => b.addEventListener("click", (e) => { e.preventDefault(); state.tab = "more"; state.sub = b.dataset.sub; render(); window.scrollTo(0, 0); }));
   document.getElementById("signOutBtn")?.addEventListener("click", async () => { clearToken(); await signOut(auth); });
   document.getElementById("saveSettings")?.addEventListener("click", async () => {
     const n = (id) => { const v = toNum(document.getElementById(id).value); return v == null ? null : Math.abs(v); };
-    const settings = { limits: { private: n("limPrivate"), business: n("limBusiness") }, cushion: n("cushion") || 0 };
+    const settings = { ...(state.settings || {}), limits: { private: n("limPrivate"), business: n("limBusiness") }, cushion: n("cushion") || 0 };
     try {
       await setDoc(doc(db, "settings", "main"), settings);
       state.settings = settings;
@@ -487,6 +510,7 @@ async function afterSignIn(user) {
   try {
     const snap = await getDoc(doc(db, "settings", "main"));
     state.settings = snap.exists() ? snap.data() : null;
+    state.imports = await loadImports(db);
   } catch (e) {
     if (e.code === "permission-denied") {
       clearToken();
@@ -504,6 +528,7 @@ $tabs.addEventListener("click", (e) => {
   const b = e.target.closest("button[data-tab]");
   if (!b) return;
   state.tab = b.dataset.tab;
+  state.sub = "";
   render();
   window.scrollTo(0, 0);
 });

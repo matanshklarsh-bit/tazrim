@@ -93,3 +93,6 @@ label.field input { width: 100%; padding: 10px; border: 1px solid var(--line); b
 .row.link { cursor: pointer; }
 .row.link:active { background: #f0f3f7; }
 .chev { color: var(--muted); font-size: 20px; margin-inline-start: 4px; }
+.small-btn { padding: 6px 12px; font-size: 13px; }
+.btn[disabled] { opacity: .45; cursor: default; }
+select { width: 100%; padding: 10px; border: 1px solid var(--line); border-radius: 8px; font: inherit; background: #fff; margin-top: 6px; }
