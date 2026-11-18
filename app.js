@@ -43,6 +43,7 @@ const auth = getAuth(app);
 const db = getFirestore(app);
 const provider = new GoogleAuthProvider();
 provider.addScope(SHEETS_SCOPE);
+provider.setCustomParameters({ prompt: "select_account" });
 
 const state = { user: null, settings: null, data: null, loadedAt: null, tab: "home", error: null };
 const $view = document.getElementById("view");
