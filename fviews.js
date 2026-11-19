@@ -46,7 +46,9 @@ export function viewForecast(F, settings) {
   let exp, worst, refs = [], accKeys;
   if (fstate.acct === "מאוחד") {
     const [a, b] = F.accts;
-    exp = cut(sumSeries(a.expected, b.expected)); worst = cut(sumSeries(a.worst, b.worst)); accKeys = [a.key, b.key];
+    // במאוחד נוספות גם הוצאות הרכב מ-niro903, שלא משויכות לחשבון
+    const carCum = (sr) => { let c = 0, i = 0; return sr.map((p) => { while (i < F.car.length && F.car[i].date <= p.date) c += F.car[i++].amount; return { date: p.date, bal: p.bal + c }; }); };
+    exp = cut(carCum(sumSeries(a.expected, b.expected))); worst = cut(carCum(sumSeries(a.worst, b.worst))); accKeys = [a.key, b.key];
   } else {
     const a = F.accts.find((x) => x.key === fstate.acct);
     exp = cut(a.expected); worst = cut(a.worst); accKeys = [a.key];
@@ -63,15 +65,16 @@ export function viewForecast(F, settings) {
     <div class="muted small">נקודת התחלה: ${accKeys.map((k) => `${esc(k)} ${money(F.start[k].bal)} (${esc(F.start[k].src)}, ${dmy(F.start[k].date)})`).join(" · ")}</div></div>`;
 
   const end = exp[exp.length - 1]?.date;
-  const evs = F.events.filter((e) => accKeys.includes(e.account) && e.date <= end);
+  const evs = F.events.filter((e) => accKeys.includes(e.account) && e.date <= end)
+    .concat(fstate.acct === "מאוחד" ? F.car.filter((e) => e.date <= end) : []).sort((x, y) => x.date.localeCompare(y.date));
   // יתרה אחרי כל אירוע (תרחיש צפוי) לחשבון של האירוע
-  const run = {}; accKeys.forEach((k) => { run[k] = F.start[k].bal; });
+  const run = {}; accKeys.forEach((k) => { run[k] = F.start[k].bal; }); run["רכב"] = 0;
   html += `<div class="card"><h2>אירועים (${evs.length})</h2>` + (evs.length ? evs.map((e) => {
     run[e.account] += e.amount;
     const [cls, txt] = CERT[e.certainty] || ["", ""];
     return `<div class="row"><div class="main"><div class="title">${TYPE_ICON[e.type] || ""} ${esc(e.label)} <span class="tag ${cls}">${e.range ? `${dmy(e.range[0])}–${dmy(e.range[1])}` : txt}</span>${e.expectedOnly ? ' <span class="tag">רק בצפוי</span>' : ""}</div>
       <div class="sub">${dmy(e.date)} · ${esc(e.account)}${e.basis ? " · " + esc(e.basis) : ""} · ${esc(e.src)}</div></div>
-      <div style="text-align:left">${money(e.amount)}<div class="muted small">${money(run[e.account])}</div></div></div>`;
+      <div style="text-align:left">${money(e.amount)}<div class="muted small">${e.account === "רכב" ? "" : money(run[e.account])}</div></div></div>`;
   }).join("") : `<div class="muted small">אין אירועים בטווח.</div>`) + `<div class="muted small" style="margin-top:6px">המספר הקטן = היתרה אחרי האירוע בתרחיש הצפוי.</div></div>`;
   return html;
 }

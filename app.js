@@ -5,7 +5,7 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import {
   getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult,
-  onAuthStateChanged, signOut
+  onAuthStateChanged, signOut, signInWithCredential
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
   getFirestore, doc, getDoc, setDoc, getDocs, collection, query, where
@@ -23,6 +23,9 @@ const firebaseConfig = {
   appId: "1:1017969263066:web:f69d73d4bb2fd1473d80e3"
 };
 
+// אפליקציית הרכב (niro903): קוראים רק את רשימת התשלומים הגדולים הצפויים שהיא מפרסמת
+const NIRO_CONFIG = { apiKey: "AIzaSyDfKga2DSpCfnm8T8HKZWBEqSZXLmZLCJs", authDomain: "niro903.firebaseapp.com", projectId: "niro903", appId: "1:82448186668:web:2578f5d94d2eec39114089" };
+const INSURANCE_PAYMENTS = 12; // ביטוח משולם בתשלומים; ההנחה: 12 תשלומים חודשיים מיום החידוש
 const SHEET_ID = "1JpEHYmGRkkhvRZKCDXQjJ67uHyFetXwTHvrbpEeRhBg";
 const SHEETS_SCOPE = "https://www.googleapis.com/auth/spreadsheets.readonly";
 const TABS = {
@@ -48,7 +51,7 @@ const provider = new GoogleAuthProvider();
 provider.addScope(SHEETS_SCOPE);
 provider.setCustomParameters({ prompt: "select_account" });
 
-const state = { user: null, settings: null, data: null, loadedAt: null, tab: "home", sub: "", imports: [], bank: [], F: null, error: null };
+const state = { user: null, settings: null, data: null, loadedAt: null, tab: "home", sub: "", imports: [], bank: [], niro: null, F: null, error: null };
 const $view = document.getElementById("view");
 const $tabs = document.getElementById("tabs");
 const $fresh = document.getElementById("freshness");
@@ -304,6 +307,45 @@ async function loadBank() {
   const snap = await getDocs(query(collection(db, "txns"), where("src", "==", "bank")));
   state.bank = snap.docs.map((d) => d.data());
 }
+let niroApp = null;
+async function loadNiro(popup = false) {
+  try {
+    niroApp ||= initializeApp(NIRO_CONFIG, "niro");
+    const auth2 = getAuth(niroApp);
+    await auth2.authStateReady();
+    if (!auth2.currentUser) {
+      if (popup) await signInWithPopup(auth2, new GoogleAuthProvider());
+      else {
+        const token = getToken();
+        if (!token) { state.niro = { error: "צריך חיבור מחדש", needLogin: true }; return; }
+        try { await signInWithCredential(auth2, GoogleAuthProvider.credential(null, token)); }
+        catch (e) { state.niro = { error: "צריך להתחבר פעם אחת ל-niro903", needLogin: true }; return; }
+      }
+    }
+    const app2 = niroApp;
+    const snap = await getDoc(doc(getFirestore(app2), "users", auth2.currentUser.uid, "meta", "forecast"));
+    state.niro = snap.exists() ? snap.data() : { error: "עוד לא פורסם צפי. צריך לפתוח את niro903 פעם אחת." };
+  } catch (e) {
+    state.niro = { error: "לא הצלחתי לקרוא את niro903 (" + (e.code || "שגיאה") + ")" };
+  }
+}
+function carEvents(today, horizonEnd) {
+  const out = [];
+  for (const x of state.niro?.items || []) {
+    const name = `${x.title} (${x.car})`;
+    if (x.cat === "insurance") {
+      const per = Math.round(x.amount / INSURANCE_PAYMENTS);
+      for (let k = 0; k < INSURANCE_PAYMENTS; k++) {
+        const d = new Date(x.date + "T12:00:00"); d.setMonth(d.getMonth() + k);
+        const date = isoD(d);
+        if (date >= today && date <= horizonEnd) out.push({ date, account: "רכב", amount: -per, label: `${name}, תשלום ${k + 1}/${INSURANCE_PAYMENTS}`, type: "loan", certainty: "estimate", basis: `לפי השנה האחרונה, בהנחה של ${INSURANCE_PAYMENTS} תשלומים`, src: "niro903" });
+      }
+    } else if (x.date >= today && x.date <= horizonEnd) {
+      out.push({ date: x.date, account: "רכב", amount: -x.amount, label: name, type: "loan", certainty: "estimate", basis: x.cat === "tires" || x.cat === "service" ? "לפי קצב הנסיעה" : "לפי השנה האחרונה", src: "niro903" });
+    }
+  }
+  return out.sort((a, b) => a.date.localeCompare(b.date));
+}
 function computeForecast(c) {
   const today = isoD(new Date());
   const horizonEnd = addDays(today, 90);
@@ -334,7 +376,7 @@ function computeForecast(c) {
     return { ...a, expected, worst, lowExp: lowPoint(inH(expected)), lowWorst: lowPoint(inH(worst)) };
   });
   const advice = st.limits && accts.length === 2 ? transferAdvice(accts.map((a) => ({ ...a, worst: a.worst.filter((p) => p.date <= addDays(today, ADVICE_DAYS)) })), st.limits, st.cushion || 0) : [];
-  return { today, start, events, recurring, accts, advice, receivables };
+  return { today, start, events, recurring, accts, advice, receivables, car: carEvents(today, horizonEnd), niroError: state.niro?.error || null };
 }
 
 const importCtx = {
@@ -450,6 +492,12 @@ function viewHome(c) {
     </div>`;
   }).join("") + `</div>`;
 
+  if (F && F.car.length) {
+    const in90 = F.car.filter((e) => e.date <= addDays(F.today, 90));
+    html += `<div class="card"><h2>רכב, 90 יום קדימה · ${money(in90.reduce((t, e) => t + e.amount, 0))}</h2>
+      <div class="muted small">מ-niro903. לא משויך לחשבון, ולכן נספר רק בתחזית המאוחדת.</div>
+      ${in90.map((e) => `<div class="row"><div class="main"><div class="title">${esc(e.label)}</div><div class="sub">${fmtDate(toDate(e.date))} · ${esc(e.basis)}</div></div><div>${money(e.amount)}</div></div>`).join("")}</div>`;
+  } else if (F?.niroError) html += `<div class="card small">רכב (niro903): ${esc(F.niroError)} ${state.niro?.needLogin ? `<button class="btn secondary small-btn" id="niroLogin">התחבר</button>` : ""}</div>`;
   if (F) {
     const until = addDays(F.today, 14);
     const next = F.events.filter((e) => e.date >= F.today && e.date <= until);
@@ -532,6 +580,7 @@ function viewMore(c) {
 const viewSoon = (title, text) => () => `<div class="card center"><h2>${esc(title)}</h2><div class="muted">${esc(text)}</div></div>`;
 
 function bindViewEvents() {
+  document.getElementById("niroLogin")?.addEventListener("click", async () => { await loadNiro(true); state.F = computeForecast(state.data); render(); });
   $view.querySelectorAll("[data-goto]").forEach((a) => a.addEventListener("click", (e) => { e.preventDefault(); state.tab = a.dataset.goto; state.sub = a.dataset.sub || ""; render(); window.scrollTo(0, 0); }));
   $view.querySelectorAll("[data-sub]").forEach((b) => b.addEventListener("click", (e) => { e.preventDefault(); state.tab = "more"; state.sub = b.dataset.sub; render(); window.scrollTo(0, 0); }));
   document.getElementById("signOutBtn")?.addEventListener("click", async () => { clearToken(); await signOut(auth); });
@@ -595,6 +644,7 @@ async function afterSignIn(user) {
     state.settings = snap.exists() ? snap.data() : null;
     state.imports = await loadImports(db);
     await loadBank();
+    loadNiro().then(() => { if (state.data) { state.F = computeForecast(state.data); render(); } });
   } catch (e) {
     if (e.code === "permission-denied") {
       clearToken();
