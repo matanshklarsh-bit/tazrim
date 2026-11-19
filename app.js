@@ -8,9 +8,11 @@ import {
   onAuthStateChanged, signOut
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
-  getFirestore, doc, getDoc, setDoc
+  getFirestore, doc, getDoc, setDoc, getDocs, collection, query, where
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { viewImport, bindImport, loadImports, freshness, viewTxns, bindTxns } from "./importer.js";
+import { detectRecurring, buildEvents, series, lowPoint, expectReceivables, transferAdvice, iso as isoD, addDays } from "./forecast.js";
+import { viewForecast, bindForecast, viewRecurring, bindRecurring } from "./fviews.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyBxOsOGAgVoQkWAu2Qx6lsrFbfAJo6u5RQ",
@@ -46,7 +48,7 @@ const provider = new GoogleAuthProvider();
 provider.addScope(SHEETS_SCOPE);
 provider.setCustomParameters({ prompt: "select_account" });
 
-const state = { user: null, settings: null, data: null, loadedAt: null, tab: "home", sub: "", imports: [], error: null };
+const state = { user: null, settings: null, data: null, loadedAt: null, tab: "home", sub: "", imports: [], bank: [], F: null, error: null };
 const $view = document.getElementById("view");
 const $tabs = document.getElementById("tabs");
 const $fresh = document.getElementById("freshness");
@@ -296,12 +298,51 @@ function compute(d) {
 }
 
 // ---------- תצוגה ----------
+// ---------- תחזית ----------
+const ADVICE_DAYS = 30;
+async function loadBank() {
+  const snap = await getDocs(query(collection(db, "txns"), where("src", "==", "bank")));
+  state.bank = snap.docs.map((d) => d.data());
+}
+function computeForecast(c) {
+  const today = isoD(new Date());
+  const horizonEnd = addDays(today, 90);
+  const st = state.settings || {};
+  // נקודת התחלה: צילום היתרה של נועה, או היתרה בקובץ הבנק אם הוא חדש יותר
+  const start = {};
+  for (const a of c.accounts) {
+    if (a.latest) start[a.key] = { date: isoD(a.latest.at), bal: a.latest.amount, src: "צילום נועה" };
+    const bankImp = state.imports.filter((im) => im.kind === "bank" && im.account === a.key && im.lastBalance).sort((x, y) => (y.to > x.to ? 1 : -1))[0];
+    if (bankImp && (!start[a.key] || bankImp.lastBalance.date > start[a.key].date)) start[a.key] = { date: bankImp.lastBalance.date, bal: bankImp.lastBalance.amount, src: "קובץ בנק" };
+  }
+  const recurring = detectRecurring(state.bank, today);
+  const receivables = expectReceivables(c.receivables.map((r) => ({ ...r, proformaDate: r.proformaDate ? isoD(r.proformaDate) : null })), c.timing, today);
+  const sheet = {
+    cardCharges: c.cardCharges.map((x) => ({ card: x.card, amount: x.amount, due: isoD(x.due), account: x.account })),
+    expected: c.expected.map((e) => ({ ...e, early: e.early ? isoD(e.early) : null, late: e.late ? isoD(e.late) : null })),
+    expectedPast: c.expectedPast.map((e) => ({ ...e, early: e.early ? isoD(e.early) : null })),
+    receivables
+  };
+  const events = buildEvents({ start, horizonEnd, recurring, sheet, overrides: st.recurringOverrides || {}, manual: st.manualRecurring || [], today });
+  const accts = ACCOUNTS.filter((a) => start[a.key]).map((a) => {
+    const evs = events.filter((e) => e.account === a.key);
+    // הסדרה מתחילה היום (אירועים שבין הצילום להיום כבר נכללים בה)
+    const full = (exp) => series(start[a.key].bal, start[a.key].date, evs, horizonEnd, exp).filter((p) => p.date >= today);
+    const expected = full(true), worst = full(false);
+    // ההמלצות והנקודה הנמוכה במסך הבית: 30 יום. רחוק מזה התחזית נשלטת ע"י הכנסות שעוד לא ידועות.
+    const inH = (sr) => sr.filter((p) => p.date <= addDays(today, ADVICE_DAYS));
+    return { ...a, expected, worst, lowExp: lowPoint(inH(expected)), lowWorst: lowPoint(inH(worst)) };
+  });
+  const advice = st.limits && accts.length === 2 ? transferAdvice(accts.map((a) => ({ ...a, worst: a.worst.filter((p) => p.date <= addDays(today, ADVICE_DAYS)) })), st.limits, st.cushion || 0) : [];
+  return { today, start, events, recurring, accts, advice, receivables };
+}
+
 const importCtx = {
   db,
   get imports() { return state.imports; },
   getSettings: () => state.settings,
-  saveSettings: async (settings) => { await setDoc(doc(db, "settings", "main"), settings); state.settings = settings; },
-  reloadImports: async () => { state.imports = await loadImports(db); },
+  saveSettings: async (settings) => { await setDoc(doc(db, "settings", "main"), settings); state.settings = settings; state.F = state.data ? computeForecast(state.data) : null; },
+  reloadImports: async () => { state.imports = await loadImports(db); await loadBank(); state.F = state.data ? computeForecast(state.data) : null; },
   rerender: () => render()
 };
 
@@ -313,11 +354,19 @@ async function render() {
   if (state.tab === "more" && state.sub === "import") {
     $view.innerHTML = viewImport(importCtx); bindImport($view, importCtx); bindViewEvents(); return;
   }
+  if (state.tab === "more" && state.sub === "recurring") {
+    $view.innerHTML = viewRecurring(state.F, state.settings);
+    bindRecurring($view, () => state.settings, async (st) => { await importCtx.saveSettings(st); render(); }); bindViewEvents(); return;
+  }
+  if (state.tab === "forecast") {
+    $view.innerHTML = state.F && state.F.accts.length ? viewForecast(state.F, state.settings) : `<div class="card muted">אין נקודת התחלה: חסר צילום יתרה.</div>`;
+    bindForecast($view, render); return;
+  }
   if (state.tab === "more" && state.sub === "txns") {
     $view.innerHTML = `<div class="center muted">טוען תנועות…</div>`;
     $view.innerHTML = await viewTxns(importCtx); bindTxns($view, importCtx); bindViewEvents(); return;
   }
-  const views = { home: viewHome, forecast: viewSoon("תחזית", "גרף יתרה ל-60 יום בשני תרחישים, נקודה נמוכה ורשימת אירועים. נבנה בשלב 3."),
+  const views = { home: viewHome,
     decide: viewDecide, insights: viewSoon("תובנות", "קטגוריות, מינויים, ביטוחים ועלות הכסף. נבנה בשלב 5, אחרי ייבוא הקבצים."), more: viewMore };
   $view.innerHTML = (state.error ? `<div class="error">${esc(state.error)}</div>` : "") + views[state.tab](c);
   bindViewEvents();
@@ -342,50 +391,72 @@ function acctColor(bal, limit, cushion) {
 
 function viewHome(c) {
   const s = state.settings;
+  const F = state.F;
   let html = "";
-  if (!s) {
-    html += `<div class="notice">עוד לא הוגדרו מסגרות. <a href="#" data-goto="more">להגדרה</a></div>`;
-  }
-  if (c.expectedPast.length) {
-    html += `<div class="notice">${c.expectedPast.map((e) => `${esc(e.type)} (${money(e.amount)}, ${fmtDate(e.late)})`).join(", ")}: המועד עבר והשורה עדיין מסומנת "צפוי" בגיליון. עד שנועה תעדכן, זה נספר כחיוב שעוד לא ירד.</div>`;
-  }
+  if (!s?.limits) html += `<div class="notice">עוד לא הוגדרו מסגרות. <a href="#" data-goto="more">להגדרה</a></div>`;
+  if (c.expectedPast.length) html += `<div class="notice">${c.expectedPast.map((e) => `${esc(e.type)} (${money(e.amount)}, ${fmtDate(e.late)})`).join(", ")}: המועד עבר והשורה עדיין מסומנת "צפוי" בגיליון. עד שנועה תעדכן, זה נספר כחיוב שעוד לא ירד.</div>`;
   if (c.review.length) html += `<div class="notice">${c.review.length} שורות בגיליון מחכות לבירור ולא נכללו. <a href="#" data-goto="more">לפרטים</a></div>`;
   if (c.pendingCards.length) html += `<div class="notice">${c.pendingCards.map((r) => esc(r["חשבון או כרטיס"])).join(", ")}: יש חיוב קרוב שעוד לא אושר, ולכן הוא לא נספר.</div>`;
   if (c.expectedNoDate.length) html += `<div class="notice">${c.expectedNoDate.map((e) => esc(e.type)).join(", ")}: חיוב צפוי בלי מועד. מוצג כחסר.</div>`;
+
   const total = c.accounts.reduce((t, a) => t + (a.latest?.amount || 0), 0);
-  const allKnown = c.accounts.every((a) => a.latest);
+  const lowW = F?.accts.length === 2 ? F.accts[0].lowWorst.bal + 0 : null;
   html += `<div class="card"><div class="muted small">סך היתרות (פרטי + עסקי)</div>
-    <div class="big">${allKnown ? money(total) : "חסר"}</div>
+    <div class="big">${c.accounts.every((a) => a.latest) ? money(total) : "חסר"}</div>
     <div class="muted small">המסגרות לא מצטברות, כל חשבון נבדק מול המסגרת שלו.</div></div>`;
+
+  // מה לעשות
+  const todo = [];
+  if (F && s?.limits) {
+    const both = F.advice.length === 2;
+    if (both) todo.push(`<span class="neg">בלי תקבולים חדשים, שני החשבונות צפויים לחצות את הכרית ב-${ADVICE_DAYS} הימים הקרובים. העברה ביניהם לא תפתור את זה: צריך לזרז גבייה או לדחות תשלומים.</span>`);
+    for (const t of both ? [] : F.advice) {
+      todo.push(t.enough
+        ? `להעביר <b>${money(t.amount)}</b> מ${esc(t.from)} ל${esc(t.to)} עד ${fmtDate(toDate(t.by))}. בלי זה ${esc(t.to)} יחצה את הכרית.`
+        : `<span class="neg">${esc(t.to)} צפוי לחצות את הכרית, וב${esc(t.from)} אין מספיק מרווח (${money(t.room)}). צריך לדחות תשלום או לזרז גבייה.</span>`);
+    }
+    for (const a of F.accts) {
+      const floor = -(s.limits[a.limitKey] || 0) + (s.cushion || 0);
+      const room = a.lowWorst.bal - floor - (F.advice.find((t) => t.from === a.key && t.enough)?.amount || 0);
+      const debts = c.debts.filter((d) => d.account === a.key);
+      if (room > 0 && debts.length) {
+        let left = room; const can = [];
+        for (const d of debts) { if (d.open <= left) { can.push(d); left -= d.open; } else break; }
+        if (can.length) todo.push(`אפשר לשלם מ${esc(a.key)} בלי לחצות את הכרית: ${can.map((d) => `${esc(d.supplier)}${d.docDate ? " " + (d.docDate.getMonth() + 1) + "/" + String(d.docDate.getFullYear()).slice(2) : ""} ${money(d.open)}`).join(", ")}.`);
+        else todo.push(`מ${esc(a.key)} אפשר לשלם עד ${money(Math.floor(room / 100) * 100)} בלי לחצות את הכרית. החוב הישן ביותר (${esc(debts[0].supplier)}, ${money(debts[0].open)}) גדול מזה, אז אפשר לשלם ממנו חלק.`);
+      }
+    }
+  }
+  const overdue = F ? F.receivables.filter((r) => r.overdue) : [];
+  if (overdue.length) todo.push(`<a href="#" data-goto="more">${overdue.length} חובות לקוחות באיחור, ${money(overdue.reduce((t, r) => t + r.open, 0))}. זו רשימת הגבייה.</a>`);
+  if (todo.length) html += `<div class="card"><h2>מה לעשות</h2>${todo.map((t) => `<div class="row"><div class="main small">${t}</div></div>`).join("")}<div class="muted small">לפי התרחיש המחמיר (בלי תקבולים), ${ADVICE_DAYS} יום קדימה. ההמלצה לא מבצעת כלום.</div></div>`;
 
   html += `<div class="accounts">` + c.accounts.map((a) => {
     const limit = s?.limits?.[a.limitKey];
+    const fa = F?.accts.find((x) => x.key === a.key);
     const bal = a.latest?.amount;
-    const color = acctColor(bal, limit, s?.cushion);
+    const color = fa && limit ? acctColor(fa.lowWorst.bal, limit, s?.cushion) : acctColor(bal, limit, s?.cushion);
     const used = bal != null && limit ? Math.min(100, Math.max(0, (-bal / limit) * 100)) : 0;
-    const k30 = c.known30[a.key] || 0;
     return `<div class="card acct ${color}">
       <h3>${esc(a.label)}</h3>
       <div class="bal">${bal == null ? "חסר" : money(bal)}</div>
       <div class="muted small">${a.latest ? `נכון ל-${fmtDate(a.latest.at)} (${ago(a.latest.at)})` : "אין צילום יתרה"}</div>
       ${limit ? `<div class="bar ${color}"><div style="width:${used}%"></div></div>
         <div class="muted small">${bal < 0 ? `נוצל ${money(-bal)} מתוך ${money(limit)}` : `מסגרת ${money(limit)} לא בשימוש`}</div>` : ""}
-      <div class="small" style="margin-top:8px">חיובים ידועים ב-30 יום: ${money(k30)}</div>
-      ${bal != null ? `<div class="small">יתרה אחריהם: ${money(bal - k30)}${limit ? ` · מרווח מהמסגרת: ${money(bal - k30 + limit)}` : ""}</div>` : ""}
+      ${fa ? `<div class="small" style="margin-top:8px">נקודה נמוכה ב-${ADVICE_DAYS} יום:</div>
+        <div class="small">מחמיר: ${money(fa.lowWorst.bal)} ב-${fmtDate(toDate(fa.lowWorst.date))}</div>
+        <div class="small">צפוי: ${money(fa.lowExp.bal)} ב-${fmtDate(toDate(fa.lowExp.date))}</div>
+        ${limit ? `<div class="small muted">מרווח מהמסגרת במחמיר: ${money(fa.lowWorst.bal + limit)}</div>` : ""}` : ""}
     </div>`;
   }).join("") + `</div>`;
-  html += `<div class="muted small" style="margin:-4px 4px 12px">"חיובים ידועים" כוללים רק חיובי כרטיסים וחיובים צפויים מהגיליון. הלוואות, הוראות קבע ותקבולים ייכנסו בשלב 3.</div>`;
 
-  html += `<div class="card"><h2>חיובים קרובים</h2>`;
-  const events = [
-    ...c.cardCharges.map((x) => ({ d: x.due, title: x.card, sub: `מחשבון ${x.account}`, amount: x.amount, tag: `<span class="tag measured">נמדד</span>` })),
-    ...c.expected.map((x) => ({ d: x.early, title: x.type, sub: `${x.period ? x.period + " · " : ""}מחשבון ${x.account}`, amount: x.amount,
-      tag: `<span class="tag estimate">${x.early && x.late && x.early.getTime() !== x.late.getTime() ? `${fmtDate(x.early)}–${fmtDate(x.late)}` : esc(x.basis || "מוערך")}</span>` }))
-  ].sort((a, b) => (a.d || 0) - (b.d || 0));
-  html += events.length ? events.map((e) => `<div class="row"><div class="main"><div class="title">${esc(e.title)} ${e.tag}</div>
-      <div class="sub">${fmtDate(e.d)} · ${esc(e.sub)}</div></div><div>${money(-Math.abs(e.amount || 0))}</div></div>`).join("")
-    : `<div class="muted small">אין חיובים ידועים קדימה.</div>`;
-  html += `</div>`;
+  if (F) {
+    const until = addDays(F.today, 14);
+    const next = F.events.filter((e) => e.date >= F.today && e.date <= until);
+    html += `<div class="card"><h2>14 הימים הקרובים</h2>` + (next.length ? next.map((e) => `<div class="row"><div class="main"><div class="title">${esc(e.label)} <span class="tag ${e.certainty === "measured" ? "measured" : "estimate"}">${e.certainty === "measured" ? "נמדד" : e.certainty === "range" ? "טווח" : "מוערך"}</span></div>
+      <div class="sub">${fmtDate(toDate(e.date))} · ${esc(e.account)}</div></div><div>${money(e.amount)}</div></div>`).join("") : `<div class="muted small">אין.</div>`) +
+      `<div class="row link" data-goto="forecast"><div class="main small">לתחזית המלאה</div><span class="chev">‹</span></div></div>`;
+  }
 
   html += `<button class="btn secondary block" data-sub="import" style="margin-bottom:12px">ייבוא קבצים</button>`;
   const debtTotal = c.debts.reduce((t, x) => t + x.open, 0);
@@ -394,7 +465,7 @@ function viewHome(c) {
       <div class="sub">${c.debts.length} חובות · הישן ביותר: ${c.debts[0]?.age != null ? c.debts[0].age + " ימים" : "—"}</div></div>
       <div>${money(debtTotal)} <span class="chev">‹</span></div></div>
     <div class="row link" data-goto="more"><div class="main"><div class="title">חובות לקוחות פתוחים</div>
-      <div class="sub">${c.receivables.length} חשבונות · הרשימה עוד לא שלמה</div></div><div>${money(recTotal)} <span class="chev">‹</span></div></div></div>`;
+      <div class="sub">${c.receivables.length} חשבונות · ${overdue.length} באיחור</div></div><div>${money(recTotal)} <span class="chev">‹</span></div></div></div>`;
   return html;
 }
 
@@ -420,12 +491,23 @@ function viewMore(c) {
   const recTotal = c.receivables.reduce((t, x) => t + x.open, 0);
   let html = `<div class="card" style="display:flex;gap:8px"><button class="btn" data-sub="import" style="flex:1">ייבוא קבצים</button>
     <button class="btn secondary" data-sub="txns" style="flex:1">תנועות</button></div>`;
-  html += `<div class="card"><h2>תקבולים פתוחים · ${money(recTotal)}</h2>
-    <div class="muted small" style="margin-bottom:6px">חובות לקוחות ישנים עדיין מחכים לאישור, ולכן הרשימה לא שלמה. מועד צפוי לפי זמני תשלום ייכנס בשלב 4.</div>` +
-    (c.receivables.length ? c.receivables.map((x) => `<div class="row"><div class="main">
+  html += `<div class="card"><button class="btn secondary block" data-sub="recurring">קבועים (הוראות קבע, הלוואות, מינויים)</button></div>`;
+  const R = state.F?.receivables || [];
+  const recRow = (x, extra) => `<div class="row"><div class="main">
       <div class="title">${esc(x.client)}</div>
-      <div class="sub">${x.proforma ? `חשבון עסקה ${esc(x.proforma)} · ${fmtDate(x.proformaDate)} · ${x.age} ימים` : `<span class="tag">אין חשבון עסקה</span>`}${x.invoice ? ` · חשבונית ${esc(x.invoice)}` : ""}${x.status ? ` · ${esc(x.status)}` : ""}</div>
-      </div><div>${money(x.open)}</div></div>`).join("") : `<div class="muted small">אין חובות פתוחים.</div>`) + `</div>`;
+      <div class="sub">${x.proforma ? `חשבון עסקה ${esc(x.proforma)} · ${fmtDate(toDate(x.proformaDate))}` : `<span class="tag">אין חשבון עסקה</span>`}${x.invoice ? ` · חשבונית ${esc(x.invoice)}` : ""} · ${esc(x.basis)}${extra}</div>
+      </div><div>${money(x.open)}</div></div>`;
+  const exp = R.filter((x) => x.expected).sort((a, b) => a.expected.localeCompare(b.expected));
+  const late = R.filter((x) => x.overdue).sort((a, b) => a.expectedRaw.localeCompare(b.expectedRaw));
+  const nob = R.filter((x) => !x.expected && !x.overdue);
+  const sum = (l) => l.reduce((t, x) => t + x.open, 0);
+  html += `<div class="card"><h2>תקבולים פתוחים · ${money(recTotal)}</h2>
+    <div class="muted small">חובות לקוחות ישנים עדיין מחכים לאישור, ולכן הרשימה לא שלמה.</div>
+    <h3 style="margin-top:12px">צפויים · ${money(sum(exp))}</h3>${exp.map((x) => recRow(x, ` · <b>צפוי ${fmtDate(toDate(x.expected))}</b>`)).join("") || '<div class="muted small">אין.</div>'}
+    <h3 style="margin-top:12px">באיחור · ${money(sum(late))}</h3>
+    <div class="muted small">לא נכנסים לתחזית, לא נמחקים, והמועד שלהם לא מתגלגל. זו רשימת הגבייה.</div>
+    ${late.map((x) => recRow(x, ` · <span class="neg">איחור ${dayDiff(new Date(), toDate(x.expectedRaw))} ימים</span>`)).join("") || '<div class="muted small">אין.</div>'}
+    ${nob.length ? `<h3 style="margin-top:12px">אין בסיס להערכה · ${money(sum(nob))}</h3>${nob.map((x) => recRow(x, "")).join("")}` : ""}</div>`;
 
   html += `<div class="card"><h2>הגדרות</h2>
     <label class="field"><span>מסגרת חשבון פרטי (₪)</span><input id="limPrivate" inputmode="numeric" value="${esc(s.limits?.private ?? "")}"></label>
@@ -457,8 +539,7 @@ function bindViewEvents() {
     const n = (id) => { const v = toNum(document.getElementById(id).value); return v == null ? null : Math.abs(v); };
     const settings = { ...(state.settings || {}), limits: { private: n("limPrivate"), business: n("limBusiness") }, cushion: n("cushion") || 0 };
     try {
-      await setDoc(doc(db, "settings", "main"), settings);
-      state.settings = settings;
+      await importCtx.saveSettings(settings);
       document.getElementById("savedMsg").textContent = "נשמר ✓";
     } catch (e) {
       document.getElementById("savedMsg").textContent = "השמירה נכשלה";
@@ -497,6 +578,7 @@ async function load() {
       return;
     }
     state.data = compute(r.data);
+    try { state.F = computeForecast(state.data); } catch (e) { state.F = null; state.error = "חישוב התחזית נכשל."; }
     state.loadedAt = new Date();
     $tabs.hidden = false; $refresh.hidden = false;
     render();
@@ -512,6 +594,7 @@ async function afterSignIn(user) {
     const snap = await getDoc(doc(db, "settings", "main"));
     state.settings = snap.exists() ? snap.data() : null;
     state.imports = await loadImports(db);
+    await loadBank();
   } catch (e) {
     if (e.code === "permission-denied") {
       clearToken();

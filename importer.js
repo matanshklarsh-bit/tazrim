@@ -29,7 +29,9 @@ export function freshness(imports) {
   const out = {};
   for (const im of imports) {
     const key = im.kind === "bank" ? im.account : im.kind === "fx" ? FX_ACCOUNT : "כרטיסים";
-    if (im.to && (!out[key] || im.to > out[key])) out[key] = im.to;
+    // במט"ח יש מעט תנועות, אז העדכניות היא תאריך הייבוא ולא התנועה האחרונה
+    const d = im.kind === "fx" && im.at?.toDate ? im.at.toDate().toISOString().slice(0, 10) : im.to;
+    if (d && (!out[key] || d > out[key])) out[key] = d;
   }
   return out;
 }
