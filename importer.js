@@ -40,6 +40,7 @@ export function viewImport(ctx) {
     <div class="muted small">אקסל של עו"ש, מט"ח, ישראכרט, כאל או מקס. הקובץ נקרא כאן במכשיר ולא נשמר. נשמרות רק התנועות, בלי מספרי חשבון ות"ז.</div>
     <label class="btn block" style="display:block;text-align:center;margin-top:12px">בחר קבצים
       <input type="file" id="fileInput" accept=".xlsx,.xls" multiple hidden></label></div>`;
+  html += `<div id="stored"><div class="card muted small">טוען סיכום…</div></div>`;
   html += `<div id="previews">${pending.map((p, i) => previewCard(p, i, ctx)).join("")}</div>`;
   html += `<div class="card"><h2>היסטוריית ייבואים</h2>` + (imports.length ? imports.map((im) => `
     <div class="row"><div class="main"><div class="title">${esc(TYPE_LABEL[im.kind] || im.kind)} · ${esc(im.account || "")}${im.cards?.length ? " · " + esc(im.cards.join(", ")) : ""}</div>
@@ -72,6 +73,7 @@ function previewCard(p, i, ctx) {
 }
 
 export function bindImport(root, ctx) {
+  viewStored(ctx).then((h) => { const el = root.querySelector("#stored"); if (el) el.innerHTML = h; }).catch(() => {});
   root.querySelector("#fileInput")?.addEventListener("change", async (e) => {
     const files = [...e.target.files];
     if (!XLSX) XLSX = await import(XLSX_URL);
@@ -184,6 +186,25 @@ async function undo(importId, ctx) {
     await batch.commit();
   }
   await deleteDoc(doc(ctx.db, "imports", importId));
+}
+
+// ---------- סיכום מה שנשמר (לבדיקה) ----------
+export async function viewStored(ctx) {
+  const snap = await getDocs(collection(ctx.db, "txns"));
+  const g = {};
+  snap.docs.forEach((d) => {
+    const t = d.data();
+    const key = t.src === "bank" || t.src === "fx" ? `${TYPE_LABEL[t.src]} · ${t.account}` : `${TYPE_LABEL[t.src]} · כרטיס ${t.card} → ${t.account}`;
+    const x = g[key] || (g[key] = { n: 0, from: t.date, to: t.date, last: null, imports: new Set() });
+    x.n++; if (t.date < x.from) x.from = t.date; if (t.date > x.to) x.to = t.date; x.imports.add(t.importId);
+    if (t.balance != null && (!x.last || t.date > x.last.date)) x.last = { date: t.date, amount: t.balance };
+  });
+  const st = ctx.getSettings() || {};
+  const maps = [...Object.entries(st.accountMap || {}).map(([k, v]) => `חשבון שמסתיים ב-${k} → ${v}`), ...Object.entries(st.cardMap || {}).map(([k, v]) => `כרטיס ${k} → ${v}`)];
+  return `<div class="card"><h2>מה נשמר (${snap.size} תנועות)</h2>` +
+    Object.entries(g).sort().map(([k, x]) => `<div class="row"><div class="main"><div class="title">${esc(k)}</div>
+      <div class="sub">${dd(x.from)}–${dd(x.to)}${x.last ? ` · יתרה אחרונה ${money(x.last.amount)}` : ""}</div></div><div>${x.n}</div></div>`).join("") +
+    `<div class="muted small" style="margin-top:8px">שיוכים: ${maps.map(esc).join(" · ") || "אין"}</div></div>`;
 }
 
 // ---------- רשימת תנועות ----------
