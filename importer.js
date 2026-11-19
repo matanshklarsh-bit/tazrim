@@ -197,7 +197,7 @@ export async function viewStored(ctx) {
     const key = t.src === "bank" || t.src === "fx" ? `${TYPE_LABEL[t.src]} · ${t.account}` : `${TYPE_LABEL[t.src]} · כרטיס ${t.card} → ${t.account}`;
     const x = g[key] || (g[key] = { n: 0, from: t.date, to: t.date, last: null, imports: new Set() });
     x.n++; if (t.date < x.from) x.from = t.date; if (t.date > x.to) x.to = t.date; x.imports.add(t.importId);
-    if (t.balance != null && (!x.last || t.date > x.last.date)) x.last = { date: t.date, amount: t.balance };
+    if (t.src === "bank" && t.balance != null && (!x.last || t.date > x.last.date)) x.last = { date: t.date, amount: t.balance };
   });
   const st = ctx.getSettings() || {};
   const maps = [...Object.entries(st.accountMap || {}).map(([k, v]) => `חשבון שמסתיים ב-${k} → ${v}`), ...Object.entries(st.cardMap || {}).map(([k, v]) => `כרטיס ${k} → ${v}`)];
