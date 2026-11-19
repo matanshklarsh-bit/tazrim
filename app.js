@@ -211,7 +211,8 @@ function compute(d) {
     const key = `${r["חשבון או כרטיס"]}|${r["מועד החיוב"]}`;
     const prev = cycles.get(key);
     if (!prev || (at && (!prev.at || at > prev.at))) {
-      cycles.set(key, { card: r["חשבון או כרטיס"], amount: toNum(r["סכום (₪)"]), due, at, account: r["חשבון לחיוב"] });
+      cycles.set(key, { card: r["חשבון או כרטיס"], amount: Math.abs(toNum(r["סכום (₪)"]) || 0), // חיוב הוא תמיד יציאה, גם אם נרשם עם מינוס
+         due, at, account: r["חשבון לחיוב"] });
     }
   });
   const cardCharges = [...cycles.values()].filter((c) => c.due && c.due >= today).sort((a, b) => a.due - b.due);
