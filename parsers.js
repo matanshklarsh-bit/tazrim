@@ -244,12 +244,33 @@ const pasteAmt = (p) => { const n = num(p.replace(/[₪\s-]/g, "")); return n ==
 const TAGS = ["הוראת קבע", 'אתר חו"ל', "אתר חול", "עסקה בתשלומים", "תשלומים", "חיוב מיידי", "בקליטה", "עסקה רגילה", "עסקה טלפונית", "עסקת אינטרנט", 'חו"ל'];
 export function parsePaste(text, card, chargeDate) {
   const cells = [];
-  for (const line of String(text).split(/\r?\n/)) for (const c of line.split(/\t| {2,}/)) { const v = s(c); if (v) cells.push(v); }
-  const recs = []; let open = false;
-  for (const c of cells) {
-    if (DATE_RE.test(c)) { recs.push({ dates: [c], parts: [] }); open = true; }
-    else if (/סה"?כ|סך הכל|סיכום/.test(c)) open = false; // שורת סיכום סוגרת את העסקה האחרונה
-    else if (open) recs[recs.length - 1].parts.push(c);
+  for (const line of String(text).split(/\r?\n/)) for (const c of line.split(/\t| {2,}|\s\|\s/)) { const v = s(c); if (v) cells.push(v); }
+  const isAmt = (c) => AMT_RE.test(c) && /\d/.test(c);
+  const isTag = (c) => /תשלום\s*\d+\s*מתוך\s*\d+/.test(c) || TAGS.includes(c);
+  const firstDate = cells.findIndex((c) => DATE_RE.test(c)), firstAmt = cells.findIndex(isAmt);
+  const recs = [];
+  if (firstAmt >= 0 && firstAmt < firstDate) {
+    // סדר "שם, סכום, תאריך, תגיות" (כמו באתר ישראכרט): עסקה נסגרת בתאריך ובתגיות שאחריו
+    let buf = [];
+    for (let i = 0; i < cells.length; i++) {
+      const c = cells[i];
+      if (/סה"?כ|סך הכל|סיכום/.test(c)) { buf = []; continue; }
+      if (!DATE_RE.test(c)) { buf.push(c); continue; }
+      const ai = buf.findIndex(isAmt);
+      // שם = הטקסט שמיד לפני הסכום (מדלג על כותרות שהועתקו)
+      const name = ai > 0 ? buf.slice(0, ai).filter((x) => !isAmt(x) && !isTag(x)).pop() : null;
+      const parts = name ? [name, ...buf.slice(ai)] : buf.slice();
+      while (i + 1 < cells.length && isTag(cells[i + 1])) parts.push(cells[++i]);
+      recs.push({ dates: [c], parts });
+      buf = [];
+    }
+  } else {
+    let open = false;
+    for (const c of cells) {
+      if (DATE_RE.test(c)) { recs.push({ dates: [c], parts: [] }); open = true; }
+      else if (/סה"?כ|סך הכל|סיכום/.test(c)) open = false; // שורת סיכום סוגרת את העסקה האחרונה
+      else if (open) recs[recs.length - 1].parts.push(c);
+    }
   }
   const txns = []; const skipped = [];
   for (const r of recs) {
