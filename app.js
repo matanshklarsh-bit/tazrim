@@ -284,7 +284,7 @@ function compute(d) {
     if (open <= 0) { flag(TABS.owed, r, "מסומנת פתוחה אבל השיוכים מכסים את הסכום"); return; }
     receivables.push({
       id: r["מזהה קבוע"], client: r["לקוח"], invoice: r["מספר חשבונית"], proforma: r["מספר חשבון עסקה"],
-      amount, open, proformaDate, age: proformaDate ? dayDiff(today, proformaDate) : null, status: st
+      amount, open, proformaDate, age: proformaDate ? dayDiff(today, proformaDate) : null, status: st, noticeDate: toDate(r["תאריך הודעת תשלום"])
     });
   });
   receivables.sort((a, b) => (a.proformaDate ? a.proformaDate.getTime() : Infinity) - (b.proformaDate ? b.proformaDate.getTime() : Infinity));
@@ -297,7 +297,11 @@ function compute(d) {
   // חיוב צפוי שמועדו עבר ועדיין "צפוי" לא נחשב ששולם: נספר כחיוב מיידי
   expectedPast.forEach((e) => { known30[e.account] = (known30[e.account] || 0) + (e.amount || 0); });
 
-  return { accounts, infoOnly, cardCharges, pendingCards, expected, expectedPast, expectedNoDate, debts, receivables, known30, review, timing: d.timing };
+  // תשלומים שנכנסו בפועל: רק עם תאריך כניסה לבנק וחשבון (אסמכתא בלי אלה אינה תנועת מזומן)
+  const receipts = d.payments.filter((p) => regOk(p) && toDate(p["תאריך כניסה לבנק"]) && ACCOUNTS.some((a) => a.key === p["חשבון"]))
+    .map((p) => ({ date: toDate(p["תאריך כניסה לבנק"]), account: p["חשבון"], amount: toNum(p["סכום שנכנס (₪)"]) || 0, label: `תקבול ${p["מזהה קבוע"]}` }));
+
+  return { receipts, accounts, infoOnly, cardCharges, pendingCards, expected, expectedPast, expectedNoDate, debts, receivables, known30, review, timing: d.timing };
 }
 
 // ---------- תצוגה ----------
@@ -358,11 +362,12 @@ function computeForecast(c) {
     if (bankImp && (!start[a.key] || bankImp.lastBalance.date > start[a.key].date)) start[a.key] = { date: bankImp.lastBalance.date, bal: bankImp.lastBalance.amount, src: "קובץ בנק" };
   }
   const recurring = detectRecurring(state.bank, today);
-  const receivables = expectReceivables(c.receivables.map((r) => ({ ...r, proformaDate: r.proformaDate ? isoD(r.proformaDate) : null })), c.timing, today);
+  const receivables = expectReceivables(c.receivables.map((r) => ({ ...r, proformaDate: r.proformaDate ? isoD(r.proformaDate) : null, noticeDate: r.noticeDate ? isoD(r.noticeDate) : null })), c.timing, today);
   const sheet = {
     cardCharges: c.cardCharges.map((x) => ({ card: x.card, amount: x.amount, due: isoD(x.due), account: x.account })),
     expected: c.expected.map((e) => ({ ...e, early: e.early ? isoD(e.early) : null, late: e.late ? isoD(e.late) : null })),
     expectedPast: c.expectedPast.map((e) => ({ ...e, early: e.early ? isoD(e.early) : null })),
+    receipts: c.receipts.map((p) => ({ ...p, date: isoD(p.date) })),
     receivables
   };
   const events = buildEvents({ start, horizonEnd, recurring, sheet, overrides: st.recurringOverrides || {}, manual: st.manualRecurring || [], today });

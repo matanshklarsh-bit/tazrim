@@ -108,6 +108,9 @@ export function buildEvents({ start, horizonEnd, recurring, sheet, overrides = {
       if (after(x.account, date)) ev.push({ date, account: x.account, amount: -x.amount, label: x.name, type: x.type || "fixed", certainty: "estimate", basis: "הוזן ידנית", src: "קבוע ידני", key: x.id });
     }
   }
+  // כסף שכבר נכנס לבנק אחרי צילום היתרה (לשונית תשלומים, עם תאריך בנק וחשבון): נמדד, בשני התרחישים
+  for (const p of sheet.receipts || []) if (start[p.account] && after(p.account, p.date))
+    ev.push({ date: p.date, account: p.account, amount: p.amount, label: p.label, type: "receipt", certainty: "measured", src: "גיליון: תשלומים (אחרי צילום היתרה)" });
   // תקבולים: רק בתרחיש הצפוי
   for (const r of sheet.receivables) if (r.expected && start["עסקי 151"] && after("עסקי 151", r.expected) && r.expected >= today)
     ev.push({ date: r.expected, account: "עסקי 151", amount: r.open, label: r.client, type: "receipt", certainty: "estimate", basis: r.basis, src: "גיליון: חייבים לי", expectedOnly: true });
@@ -119,6 +122,11 @@ export function expectReceivables(receivables, timing, today) {
   const general = timing.find((t) => /כללי/.test(t["לקוח"]));
   const gDays = general ? +general["חציון (ימים)"] : 46;
   return receivables.map((r) => {
+    // הודעת תשלום מהלקוח: הכסף בדרך. צפוי תוך יומיים מההודעה (ולא לפני מחר), עד שהזיכוי יאומת בבנק
+    if (r.noticeDate) {
+      const exp = addDays(r.noticeDate, 2) > today ? addDays(r.noticeDate, 2) : addDays(today, 1);
+      return { ...r, expected: exp, overdue: false, expectedRaw: exp, basis: `הודעת תשלום מ-${+r.noticeDate.slice(8)}.${+r.noticeDate.slice(5, 7)}, הזיכוי טרם אומת` };
+    }
     if (!r.proformaDate) return { ...r, expected: null, basis: "אין בסיס להערכה" };
     const t = timing.find((x) => x["לקוח"] === r.client && +x["מספר שרשראות"] >= 3);
     const days = t ? +t["חציון (ימים)"] : gDays;
