@@ -2,7 +2,7 @@
 // אין כאן נתונים כספיים. מספרי חשבון ות"ז לא נשמרים: מזהים רק לפי 4 ספרות אחרונות, ומסווים מספרים ארוכים בטקסט.
 
 export const KINDS = { BANK: "bank", FX: "fx", ISRACARD: "isracard", CAL: "cal", MAX: "max" };
-export const TYPE_LABEL = { bank: 'עו"ש (פועלים)', fx: 'מט"ח (פועלים)', isracard: 'ישראכרט "חיובים קרובים"', cal: "כאל", max: "מקס" };
+export const TYPE_LABEL = { bank: 'עו"ש (פועלים)', fx: 'מט"ח (פועלים)', isracard: 'ישראכרט "חיובים קרובים"', cal: "כאל", max: "מקס", paste: "הדבקה ידנית" };
 
 const s = (v) => (v == null ? "" : String(v)).replace(/״/g, '"').replace(/׳/g, "'").replace(/''/g, '"').replace(/[‎‏‪-‮]/g, "").replace(/\s+/g, " ").trim();
 const num = (v) => {
@@ -233,4 +233,38 @@ export async function txnId(t, accountKey, occurrence) {
   const key = [accountKey, t.card || "", t.chargeDate || "", t.date, t.ref || "", t.desc, t.amount, t.balance ?? "", occurrence].join("|");
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(key));
   return [...new Uint8Array(buf)].slice(0, 12).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+// ---------- הדבקה ידנית מאתר חברת האשראי ----------
+// מקבל טקסט שהועתק מטבלת עסקאות. כל עסקה מתחילה בתאריך. עובד גם כשהעמודות מופרדות בטאב וגם כשכל תא בשורה נפרדת.
+const DATE_RE = /^(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})$/;
+const AMT_RE = /^-?₪?\s*-?[\d,]+(\.\d{1,2})?\s*₪?$/;
+export function parsePaste(text, card, chargeDate) {
+  const cells = [];
+  for (const line of String(text).split(/\r?\n/)) for (const c of line.split(/\t| {2,}/)) { const v = s(c); if (v) cells.push(v); }
+  const recs = []; let open = false;
+  for (const c of cells) {
+    if (DATE_RE.test(c)) { recs.push({ dates: [c], parts: [] }); open = true; }
+    else if (/סה"?כ|סך הכל|סיכום/.test(c)) open = false; // שורת סיכום סוגרת את העסקה האחרונה
+    else if (open) recs[recs.length - 1].parts.push(c);
+  }
+  const txns = []; const skipped = [];
+  for (const r of recs) {
+    // תאריך חיוב בתוך השורה (אם יש) – נלקח כתאריך חיוב
+    while (r.parts.length && DATE_RE.test(r.parts[0])) r.dates.push(r.parts.shift());
+    let notes = "";
+    const texts = []; const amts = [];
+    for (const p of r.parts) {
+      const inst = p.match(/תשלום\s*\d+\s*מתוך\s*\d+/);
+      if (inst) { notes = inst[0]; const rest = p.replace(inst[0], "").trim(); if (rest) texts.push(rest); continue; }
+      if (AMT_RE.test(p) && /\d/.test(p)) amts.push(num(p.replace(/₪/g, "")));
+      else if (!DATE_RE.test(p)) texts.push(p);
+    }
+    const desc = texts[0] || "";
+    if (!desc || !amts.length) { skipped.push([...r.dates, ...r.parts].join(" ")); continue; }
+    const charged = amts[amts.length - 1];
+    txns.push({ card, chargeDate: iso(r.dates[1]) || chargeDate, date: iso(r.dates[0]), desc, amount: -charged, chargeCurrency: "ILS",
+      purchaseAmount: amts[0], purchaseCurrency: "ILS", notes, txType: texts.slice(1).join(" · ") });
+  }
+  return { kind: "paste", suffix: null, txns, checks: [], masked: 0, skipped };
 }
