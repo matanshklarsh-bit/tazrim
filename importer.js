@@ -67,7 +67,7 @@ function previewCard(p, i, ctx) {
   if (p.kind === "paste") {
     extra.push(`כרטיס ${esc(p.cards[0])}, חיוב ${dd(p.chargeDate)} · סך העסקאות: ${money(p.sum)}`);
     if (p.skipped?.length) extra.push(`<span class="neg">שורות שלא זוהו (${p.skipped.length}): ${esc(p.skipped.slice(0, 3).join(" | "))}</span>`);
-    extra.push(p.txns.map((t) => `${dd(t.date)} ${esc(t.desc)} ${money(t.amount)}${t.notes ? " (" + esc(t.notes) + ")" : ""}`).join("<br>"));
+    extra.push(p.txns.map((t) => `${dd(t.date)} ${esc(t.desc)}${t.txType ? ` <span class="tag">${esc(t.txType)}</span>` : ""} ${money(t.amount)}${t.notes ? " (" + esc(t.notes) + ")" : ""}`).join("<br>"));
   }
   if (p.lastBalance) extra.push(`יתרה בשורה האחרונה: ${money(p.lastBalance.amount)} (${dd(p.lastBalance.date)})`);
   if (p.fxBalance) extra.push(`יתרה: ${nf.format(p.fxBalance.amount)} ${esc(p.fxBalance.currency)} (שווי ${money(p.fxBalance.ils)})`);
@@ -143,10 +143,12 @@ async function buildPaste(ctx) {
   // בדיקה מול החיוב בבנק: תנועת עו"ש עם אסמכתא = מספר הכרטיס, עד 3 ימים מתאריך החיוב
   const lo = new Date(date); lo.setDate(lo.getDate() - 3); const hi = new Date(date); hi.setDate(hi.getDate() + 3);
   const snap = await getDocs(query(collection(ctx.db, "txns"), where("date", ">=", lo.toISOString().slice(0, 10))));
-  const bank = snap.docs.map((d) => d.data()).filter((t) => t.src === "bank" && t.ref === card && t.date <= hi.toISOString().slice(0, 10));
+  // חיוב הכרטיס בעו"ש: "מסטרקרד" עם אסמכתא = מספר הכרטיס, או "ישראכרט בע"מ" (הוראת חיוב כללית) באותו חשבון
+  const bank = snap.docs.map((d) => d.data()).filter((t) => t.src === "bank" && t.date <= hi.toISOString().slice(0, 10) &&
+    (t.ref === card || (t.account === pasteForm.account && /ישראכרט/.test(t.desc) && t.amount < 0)));
   const bankSum = Math.round(bank.reduce((a, t) => a - t.amount, 0) * 100) / 100;
   p.checks = [bank.length
-    ? { label: `סך העסקאות = החיוב בבנק (${bankSum} ב-${dd(bank[0].date)})`, ok: Math.abs(bankSum - p.sum) < 0.01, detail: `${p.sum} מול ${bankSum}. אולי חסרה שורה או שהועתק חודש אחר.` }
+    ? { label: `סך העסקאות = החיוב בבנק (${bankSum} ב-${dd(bank[0].date)})`, ok: Math.abs(bankSum - p.sum) < 0.01, detail: `הודבקו ${p.sum}, בבנק ירדו ${bankSum}: הפרש ${Math.round((bankSum - p.sum) * 100) / 100}. אולי חסרה שורה (למשל דמי כרטיס) או ששורה הודבקה פעמיים. כדאי להשוות לשורת הסיכום באתר.` }
     : { label: "לא נמצא חיוב תואם בעו\"ש שנקלט (אולי החיוב עוד לא ירד, או שקובץ העו\"ש לא עדכני)", ok: p.skipped.length === 0, detail: "יש שורות שלא זוהו" }];
   if (p.skipped.length) p.checks.push({ label: "כל השורות זוהו", ok: false, detail: p.skipped.join(" | ") });
   return p;

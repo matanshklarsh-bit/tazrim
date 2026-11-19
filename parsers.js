@@ -238,7 +238,10 @@ export async function txnId(t, accountKey, occurrence) {
 // ---------- הדבקה ידנית מאתר חברת האשראי ----------
 // מקבל טקסט שהועתק מטבלת עסקאות. כל עסקה מתחילה בתאריך. עובד גם כשהעמודות מופרדות בטאב וגם כשכל תא בשורה נפרדת.
 const DATE_RE = /^(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})$/;
-const AMT_RE = /^-?₪?\s*-?[\d,]+(\.\d{1,2})?\s*₪?$/;
+const AMT_RE = /^[-₪\s]*[\d,]+(\.\d{1,2})?[-₪\s]*$/;
+const pasteAmt = (p) => { const n = num(p.replace(/[₪\s-]/g, "")); return n == null ? null : (p.includes("-") ? -n : n); };
+// תגיות שמופיעות בטבלה ליד שם בית העסק ואינן השם עצמו
+const TAGS = ["הוראת קבע", 'אתר חו"ל', "אתר חול", "עסקה בתשלומים", "תשלומים", "חיוב מיידי", "בקליטה", "עסקה רגילה", "עסקה טלפונית", "עסקת אינטרנט", 'חו"ל'];
 export function parsePaste(text, card, chargeDate) {
   const cells = [];
   for (const line of String(text).split(/\r?\n/)) for (const c of line.split(/\t| {2,}/)) { const v = s(c); if (v) cells.push(v); }
@@ -254,17 +257,22 @@ export function parsePaste(text, card, chargeDate) {
     while (r.parts.length && DATE_RE.test(r.parts[0])) r.dates.push(r.parts.shift());
     let notes = "";
     const texts = []; const amts = [];
-    for (const p of r.parts) {
+    const tags = [];
+    for (let p of r.parts) {
       const inst = p.match(/תשלום\s*\d+\s*מתוך\s*\d+/);
-      if (inst) { notes = inst[0]; const rest = p.replace(inst[0], "").trim(); if (rest) texts.push(rest); continue; }
-      if (AMT_RE.test(p) && /\d/.test(p)) amts.push(num(p.replace(/₪/g, "")));
-      else if (!DATE_RE.test(p)) texts.push(p);
+      if (inst) { notes = inst[0]; p = p.replace(inst[0], "").trim(); if (!p) continue; }
+      if (AMT_RE.test(p) && /\d/.test(p)) { amts.push(pasteAmt(p)); continue; }
+      if (DATE_RE.test(p)) continue;
+      // תגית בתחילת התא ("הוראת קבע מועצה...") מופרדת מהשם
+      for (const t of TAGS) if (p === t || p.startsWith(t + " ")) { tags.push(t); p = p.slice(t.length).trim(); }
+      if (p) texts.push(p);
     }
-    const desc = texts[0] || "";
+    if (!r.parts.length) continue; // תאריך בודד (למשל תאריך חיוב בעמודה נפרדת) – לא עסקה
+    const desc = texts.sort((a, b) => b.length - a.length)[0] || tags[0] || "";
     if (!desc || !amts.length) { skipped.push([...r.dates, ...r.parts].join(" ")); continue; }
     const charged = amts[amts.length - 1];
     txns.push({ card, chargeDate: iso(r.dates[1]) || chargeDate, date: iso(r.dates[0]), desc, amount: -charged, chargeCurrency: "ILS",
-      purchaseAmount: amts[0], purchaseCurrency: "ILS", notes, txType: texts.slice(1).join(" · ") });
+      purchaseAmount: amts[0], purchaseCurrency: "ILS", notes, txType: tags.join(" · "), abroad: tags.some((t) => t.includes("חו")) });
   }
   return { kind: "paste", suffix: null, txns, checks: [], masked: 0, skipped };
 }
