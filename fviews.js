@@ -25,13 +25,13 @@ function chart(lines, refs, w = 360, h = 190) {
   const xt = lines[0].data.map((p, i) => i % step === 0 ? `<text x="${x(i)}" y="${h - 6}" text-anchor="middle" class="ax">${dmy(p.date)}</text>` : "").join("");
   const zero = min < 0 && max > 0 ? `<line x1="${L}" x2="${w - R}" y1="${y(0)}" y2="${y(0)}" stroke="#c9ced6" stroke-width="1"/>` : "";
   const refL = refs.map((r) => `<line x1="${L}" x2="${w - R}" y1="${y(r.y)}" y2="${y(r.y)}" stroke="${r.color}" stroke-width="1.3" stroke-dasharray="${r.dash || ""}"/>
-    <text x="${w - R}" y="${y(r.y) - 3}" text-anchor="end" class="ax" fill="${r.color}">${esc(r.label)}</text>`).join("");
+    <text x="${L + 4}" y="${y(r.y) - 3}" text-anchor="start" class="ax" fill="${r.color}">${esc(r.label)}</text>`).join("");
   const ln = lines.map((l) => `<path d="${path(l.data)}" fill="none" stroke="${l.color}" stroke-width="2" stroke-dasharray="${l.dash || ""}"/>`).join("");
   const marks = lines.filter((l) => l.mark).map((l) => {
     const i = l.data.findIndex((p) => p.date === l.mark.date);
     return i < 0 ? "" : `<circle cx="${x(i)}" cy="${y(l.mark.bal)}" r="4" fill="${l.color}"/>`;
   }).join("");
-  return `<svg viewBox="0 0 ${w} ${h}" class="chart" role="img" aria-label="יתרה יומית צפויה">${zero}${refL}${ln}${marks}${ticks}${xt}</svg>`;
+  return `<svg viewBox="0 0 ${w} ${h}" class="chart" direction="ltr" style="direction:ltr" role="img" aria-label="יתרה יומית צפויה">${zero}${refL}${ln}${marks}${ticks}${xt}</svg>`;
 }
 
 const sumSeries = (a, b) => a.map((p, i) => ({ date: p.date, bal: p.bal + (b[i]?.bal || 0) }));
