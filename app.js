@@ -189,7 +189,7 @@ function compute(d) {
 
   // יתרות: רק רישום תקין ואישור "כן"/"לא נדרש". 2165 ושאר הכרטיסים לא נכנסים ליתרות העו"ש.
   const pendingApproval = [];
-  const BALANCE_TYPES = ['יתרת עו"ש', "חיוב הבא"];
+  const BALANCE_TYPES = ['יתרת עו"ש', "חיוב הבא", 'יתרת מט"ח'];
   const balances = d.balances.filter((r) => {
     if (!BALANCE_TYPES.includes(r["סוג"])) { flag(TABS.balances, r, `סוג "${r["סוג"] || "ריק"}" לא מוכר`); return false; }
     if (!regOk(r)) { flag(TABS.balances, r, `סטטוס רישום "${r["סטטוס רישום"] || "ריק"}"`); return false; }
@@ -205,7 +205,8 @@ function compute(d) {
       .sort((x, y) => y.at - x.at);
     return { ...a, latest: snaps[0] || null };
   });
-  const infoOnly = balances.filter((r) => r["סוג"] === 'יתרת עו"ש' && !ACCOUNTS.some((a) => a.key === r["חשבון או כרטיס"]))
+  // מידע בלבד: כרטיס נטען 2165 ויתרת המט"ח (חיסכון לטיול) לא נכנסים ליתרות העו"ש ולתחזית
+  const infoOnly = balances.filter((r) => (r["סוג"] === 'יתרת עו"ש' || r["סוג"] === 'יתרת מט"ח') && !ACCOUNTS.some((a) => a.key === r["חשבון או כרטיס"]))
     .map((r) => ({ name: r["חשבון או כרטיס"], amount: toNum(r["סכום (₪)"]) }));
 
   // חיובי כרטיסים: אותו כרטיס + אותו מועד חיוב נספר פעם אחת, לפי הצילום העדכני
